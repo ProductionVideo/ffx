@@ -1,0 +1,16 @@
+[project]
+name = "ffx"
+version = "0.1.0"
+description = "A beautiful CLI wrapper for FFmpeg"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0",
+    "InquirerPy>=0.3.4",
+]
+
+[project.scripts]
+ffx = "ffx.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
