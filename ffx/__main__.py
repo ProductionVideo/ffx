@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from rich.table import Table
+
+from ffx import hardware, probe, recipes
+from ffx.analyse import run_qc, summary_rows
+from ffx.analyse import prompt as analyse_prompt
+from ffx.build import build_argv
+from ffx.models import FFmpegJob, OutputConfig, Recipe
+from ffx.operations import CATEGORIES, get_operation
+from ffx.runner import FFmpegRunError, run as run_ffmpeg
+from ffx.ui import prompts
+from ffx.ui.theme import console, print_banner, print_step
+
+_MEDIA_EXTENSIONS = {
+    ".mp4", ".mov", ".mkv", ".avi", ".webm", ".mxf", ".ts", ".m4v",
+    ".mp3", ".wav", ".flac", ".aac", ".m4a",
+}
+
+
+def main() -> None:
+    print_banner()
+    caps = hardware.detect()
+
+    try:
+        inputs = _select_inputs()
+        representative = probe.probe(inputs[0])
+
+        ordered_ops = _select_operations(representative, caps)
+        if ordered_ops is None:
+            console.print("No operations selected, nothing to do.", style="ffx.muted")
+            return
+
+        output_dir, suffix = _select_output(inputs[0], ordered_ops)
+
+        _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps)
+    except KeyboardInterrupt:
+        console.print("\nCancelled.", style="ffx.muted")
+        sys.exit(130)
+
+
+def _select_inputs() -> list[Path]:
+    print_step(1, 5, "Where — pick a file or a directory of files")
+    path = prompts.ask_existing_path("Path to a media file or directory:")
+    if path.is_dir():
+        files = sorted(p for p in path.iterdir() if p.suffix.lower() in _MEDIA_EXTENSIONS)
+        if not files:
+            console.print(f"No media files found in {path}", style="ffx.error")
+            sys.exit(1)
+        console.print(f"Found {len(files)} file(s) in {path}", style="ffx.ok")
+        return files
+    return [path]
+
+
+def _select_operations(media, caps):
+    print_step(2, 5, "What — build up one or more operations")
+
+    ordered_ops: list[tuple[object, dict]] = []
+    saved_recipes = recipes.list_recipes()
+
+    while True:
+        menu = [(f"{m.display_name} — {m.description}", m.name) for m in CATEGORIES]
+        menu.append(("Analyse (read-only report, doesn't change the file)", "analyse"))
+        if saved_recipes:
+            menu.append(("Use a saved recipe...", "recipes"))
+        if ordered_ops:
+            menu.append(("Done — continue to output & run", "done"))
+
+        choice = prompts.choose("What do you want to do?" , menu)
+
+        if choice == "done":
+            break
+        if choice == "analyse":
+            _run_analyse(media)
+            continue
+        if choice == "recipes":
+            ordered_ops = _pick_recipe(saved_recipes)
+            continue
+
+        module = get_operation(choice)
+        params = module.prompt(media, caps)
+        ordered_ops.append((module, params))
+        console.print(f"Added: {module.display_name}", style="ffx.ok")
+
+        if not prompts.ask_confirm("Add another operation?", default=False):
+            break
+
+    return ordered_ops or None
+
+
+def _run_analyse(media) -> None:
+    params = analyse_prompt()
+    table = Table(title=f"Analysis: {media.path.name}")
+    table.add_column("Property")
+    table.add_column("Value")
+    for key, value in summary_rows(media):
+        table.add_row(key, value)
+    console.print(table)
+
+    if params["checks"]:
+        findings = run_qc(media.path, params["checks"])
+        if "black" in params["checks"]:
+            _print_findings("Black sections", findings.black_sections, "start={0:.2f}s end={1:.2f}s dur={2:.2f}s")
+        if "silence" in params["checks"]:
+            _print_findings("Silent sections", findings.silence_sections, "start={0:.2f}s end={1} dur={2}")
+        if "freeze" in params["checks"]:
+            for s in findings.freeze_starts:
+                console.print(f"  Frozen section starting at {s:.2f}s")
+            if not findings.freeze_starts:
+                console.print("  No frozen sections detected", style="ffx.muted")
+
+
+def _print_findings(title: str, sections: list, fmt: str) -> None:
+    console.print(f"[bold]{title}:[/bold]")
+    if not sections:
+        console.print("  None detected", style="ffx.muted")
+        return
+    for section in sections:
+        console.print("  " + fmt.format(*section))
+
+
+def _pick_recipe(saved_recipes: list[Recipe]) -> list[tuple[object, dict]]:
+    recipe = prompts.choose(
+        "Choose a recipe:",
+        [(f"{r.name} — {r.description}", r) for r in saved_recipes],
+    )
+    ordered_ops = []
+    for entry in recipe.operations:
+        module = get_operation(entry["name"])
+        ordered_ops.append((module, entry["params"]))
+    console.print(f"Loaded recipe: {recipe.name} ({len(ordered_ops)} operation(s))", style="ffx.ok")
+    return ordered_ops
+
+
+def _select_output(first_input: Path, ordered_ops) -> tuple[Path, str]:
+    print_step(4, 5, "Where — choose where output goes")
+    suffix = "-".join(module.name for module, _ in ordered_ops)
+    default_dir = str(first_input.parent)
+    out_dir_str = prompts.ask_text("Output directory:", default=default_dir)
+    return Path(out_dir_str).expanduser().resolve(), suffix
+
+
+def _output_extension(ordered_ops, source_ext: str) -> str:
+    for module, params in reversed(ordered_ops):
+        if module.name == "convert":
+            return "." + module.output_extension(params)
+    return source_ext
+
+
+def _has_stream_copy_conflict(ordered_ops) -> bool:
+    # Cheap heuristic for the pre-flight warning below; cut.py is the
+    # only Phase 1 op that can emit "-c copy" (stream copy), which can't
+    # be combined with any op needing a filter/re-encode.
+    has_copy_cut = any(
+        module.name == "cut" and not params.get("reencode", True) for module, params in ordered_ops
+    )
+    return has_copy_cut and len(ordered_ops) > 1
+
+
+def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
+    print_step(5, 5, "Go — review and run")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if _has_stream_copy_conflict(ordered_ops):
+        console.print(
+            "Warning: combining a no-re-encode cut with another operation that needs "
+            "filtering/re-encoding will likely fail in ffmpeg (stream copy can't be filtered).",
+            style="ffx.warn",
+        )
+
+    jobs = []
+    for input_path in inputs:
+        media = probe.probe(input_path)
+        ops = [module.build(params, media, caps) for module, params in ordered_ops]
+        ext = _output_extension(ordered_ops, input_path.suffix)
+        out_name = f"{input_path.stem}.{suffix}{ext}" if suffix else f"{input_path.stem}.out{ext}"
+        job = FFmpegJob(
+            inputs=[input_path],
+            operations=ops,
+            output=OutputConfig(path=output_dir / out_name),
+            hardware=caps,
+        )
+        argv = build_argv(job)
+        jobs.append((input_path, media, job, argv))
+
+    console.print("\n[bold]Command(s) to run:[/bold]")
+    for input_path, _, _, argv in jobs:
+        console.print(f"  [ffx.command]{' '.join(argv)}[/ffx.command]")
+
+    if not prompts.ask_confirm(f"Run {'this command' if len(jobs) == 1 else f'these {len(jobs)} commands'}?", default=True):
+        console.print("Cancelled.", style="ffx.muted")
+        return
+
+    for input_path, media, job, argv in jobs:
+        console.print(f"\n[ffx.step]Processing[/ffx.step] {input_path.name}")
+        try:
+            run_ffmpeg(argv, total_duration=media.duration, console=console)
+        except FFmpegRunError as exc:
+            console.print(f"ffmpeg failed (exit {exc.returncode}):", style="ffx.error")
+            console.print(exc.stderr_tail, style="ffx.muted")
+            sys.exit(exc.returncode)
+        console.print(f"Wrote {job.output.path}", style="ffx.ok")
+
+    if prompts.ask_confirm("Save this as a recipe for next time?", default=False):
+        _save_recipe(ordered_ops)
+
+
+def _save_recipe(ordered_ops) -> None:
+    recipe_name = prompts.ask_text("Recipe name:")
+    recipe_description = prompts.ask_text("Short description:")
+    recipe = Recipe(
+        name=recipe_name,
+        description=recipe_description,
+        operations=[{"name": module.name, "params": params} for module, params in ordered_ops],
+    )
+    path = recipes.save(recipe)
+    console.print(f"Saved recipe to {path}", style="ffx.ok")
+
+
+if __name__ == "__main__":
+    main()

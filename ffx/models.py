@@ -100,6 +100,22 @@ class HardwareCapabilities:
 
 
 @dataclass
+class Preset:
+    """A named, curated shortcut for an operation's parameters.
+
+    Every operation category offers a short list of these plus a final
+    "Custom..." choice that falls through to the full granular prompts.
+    `values` are seed answers for that operation's param dict; a preset
+    may leave some keys unset if the operation still needs to ask for
+    them (e.g. a Cut preset doesn't know the timestamps in advance).
+    """
+
+    name: str
+    description: str
+    values: dict = field(default_factory=dict)
+
+
+@dataclass
 class OperationSettings:
     name: str
     display_name: str
