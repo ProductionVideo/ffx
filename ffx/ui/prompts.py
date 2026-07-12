@@ -51,22 +51,35 @@ def choose_preset(presets: list[Preset], *, message: str = "Choose a preset:") -
 
     Returns the chosen Preset, or None if the user picked Custom - the
     caller should then fall through to its full granular prompt flow.
+
+    Selection is by index rather than handing the Preset object itself to
+    InquirerPy as the Choice value: a dataclass instance round-tripped
+    through the select prompt has been observed coming back as a plain
+    dict, which breaks any caller that expects a Preset.
     """
-    choices = [Choice(value=p, name=f"{p.name}  [{p.description}]") for p in presets]
-    choices.append(Choice(value=None, name="Custom... (set every option yourself)"))
-    return inquirer.select(
+    choices = [Choice(value=i, name=f"{p.name}  [{p.description}]") for i, p in enumerate(presets)]
+    choices.append(Choice(value=-1, name="Custom... (set every option yourself)"))
+    index = inquirer.select(
         message=message,
         choices=choices,
+        default=choices[0].value,
         style=INQUIRER_STYLE,
         qmark="?",
     ).execute()
+    return presets[index] if index >= 0 else None
 
 
-def choose(message: str, choices: list[tuple[str, Any]]) -> Any:
-    """Generic menu: choices is a list of (label, value) pairs."""
+def choose(message: str, choices: list[tuple[str, Any]], *, default: Any = None) -> Any:
+    """Generic menu: choices is a list of (label, value) pairs.
+
+    `default` pre-highlights the matching choice so the common/fast path
+    is just pressing Enter, while every option is still one arrow-key
+    away - speed and full manual control aren't in tension.
+    """
     return inquirer.select(
         message=message,
         choices=[Choice(value=value, name=label) for label, value in choices],
+        default=default,
         style=INQUIRER_STYLE,
         qmark="?",
     ).execute()

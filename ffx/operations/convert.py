@@ -1,18 +1,78 @@
 from __future__ import annotations
 
 from ffx import presets as preset_calc
-from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings, Preset
+from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings
 from ffx.ui import prompts
 
 name = "convert"
 display_name = "Convert"
-description = "Change container and/or codecs, or compress to a target size"
+description = "Change container, video codec, and audio codec independently"
 
+# "Standard" codecs share one quality mechanism: an engine choice (software
+# vs VideoToolbox hardware, where available) and either a calculated
+# compression-preset tier or a manually entered quality value. ProRes and
+# DNxHR are profile-based (the profile *is* the quality tier) and are
+# handled separately below.
 _VIDEO_CODECS = {
     "h264": {"sw": "libx264", "hw": "h264_videotoolbox"},
     "hevc": {"sw": "libx265", "hw": "hevc_videotoolbox"},
     "av1": {"sw": "libsvtav1", "hw": None},
     "vp9": {"sw": "libvpx-vp9", "hw": None},
+    "mpeg2": {"sw": "mpeg2video", "hw": None},
+}
+
+_MANUAL_QUALITY_FLAG = {
+    "h264": "-crf",
+    "hevc": "-crf",
+    "av1": "-crf",
+    "vp9": "-crf",
+    "mpeg2": "-q:v",
+}
+_MANUAL_QUALITY_DEFAULT = {
+    "h264": "23",
+    "hevc": "23",
+    "av1": "32",
+    "vp9": "32",
+    "mpeg2": "4",
+}
+_MANUAL_QUALITY_HINT = {
+    "h264": "CRF, lower = higher quality/larger file (~18-28 typical)",
+    "hevc": "CRF, lower = higher quality/larger file (~18-28 typical)",
+    "av1": "CRF, lower = higher quality/larger file (~24-40 typical)",
+    "vp9": "CRF, lower = higher quality/larger file (~24-40 typical)",
+    "mpeg2": "qscale, lower = higher quality/larger file (1-31, ~2-6 typical)",
+}
+
+_DEFAULT_CONTAINER = {
+    "h264": "mp4",
+    "hevc": "mp4",
+    "av1": "webm",
+    "vp9": "webm",
+    "prores": "mov",
+    "dnxhr": "mov",
+    "mpeg2": "mov",
+    "copy_v": "mp4",
+}
+_DEFAULT_AUDIO = {
+    "prores": "pcm",
+    "dnxhr": "pcm",
+}
+
+_PRORES_PROFILES = [("Proxy", "0"), ("LT", "1"), ("Standard 422", "2"), ("422 HQ", "3")]
+
+_DNXHR_PROFILES = [
+    ("LQ (low quality, offline)", "dnxhr_lq"),
+    ("SQ (standard quality)", "dnxhr_sq"),
+    ("HQ (high quality)", "dnxhr_hq"),
+    ("HQX (10-bit high quality)", "dnxhr_hqx"),
+    ("444 (10-bit, no chroma subsampling)", "dnxhr_444"),
+]
+_DNXHR_PIXFMT = {
+    "dnxhr_lq": "yuv422p",
+    "dnxhr_sq": "yuv422p",
+    "dnxhr_hq": "yuv422p",
+    "dnxhr_hqx": "yuv422p10le",
+    "dnxhr_444": "yuv444p10le",
 }
 
 _AUDIO_CODECS = {
@@ -25,62 +85,26 @@ _AUDIO_CODECS = {
     "copy": {"encoder": "copy", "bitrate_k": None},
 }
 
-PRESETS = [
-    Preset(
-        "Web-friendly MP4",
-        "H.264 + AAC, plays everywhere",
-        {
-            "container": "mp4",
-            "vcodec": "h264",
-            "engine": "software",
-            "quality_mode": "crf",
-            "crf": 20,
-            "acodec": "aac",
-        },
-    ),
-    Preset(
-        "Small archive (HEVC/MKV)",
-        "H.265 in MKV, noticeably smaller files",
-        {
-            "container": "mkv",
-            "vcodec": "hevc",
-            "engine": "software",
-            "quality_mode": "crf",
-            "crf": 24,
-            "acodec": "aac",
-        },
-    ),
-    Preset(
-        "Editing master (ProRes 422 HQ)",
-        "MOV, VideoToolbox ProRes for editing",
-        {
-            "container": "mov",
-            "vcodec": "prores",
-            "engine": "hardware",
-            "prores_profile": "3",
-            "acodec": "pcm",
-        },
-    ),
-    Preset(
-        "Web AV1 (WebM)",
-        "Best compression for modern web delivery",
-        {
-            "container": "webm",
-            "vcodec": "av1",
-            "engine": "software",
-            "quality_mode": "crf",
-            "crf": 32,
-            "acodec": "opus",
-        },
-    ),
-]
-
 
 def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
-    preset = prompts.choose_preset(PRESETS, message="Convert — choose a preset:")
-    if preset is not None:
-        return dict(preset.values)
-
+    # Codec first, then everything else defaults sensibly around it (right
+    # container, right audio codec, right engine/profile) so switching
+    # codec is the one real decision - every other prompt is an Enter to
+    # accept the default, or an arrow-key away from overriding it.
+    vcodec = prompts.choose(
+        "Video codec:",
+        [
+            ("H.264", "h264"),
+            ("H.265 / HEVC", "hevc"),
+            ("AV1", "av1"),
+            ("VP9", "vp9"),
+            ("ProRes", "prores"),
+            ("DNxHR (DNxHD's resolution-independent successor)", "dnxhr"),
+            ("MPEG-2", "mpeg2"),
+            ("Copy (no re-encode)", "copy_v"),
+        ],
+        default="h264",
+    )
     container = prompts.choose(
         "Target container:",
         [
@@ -92,17 +116,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             ("AVI", "avi"),
             ("MPEG-TS", "ts"),
         ],
-    )
-    vcodec = prompts.choose(
-        "Video codec:",
-        [
-            ("H.264", "h264"),
-            ("H.265 / HEVC", "hevc"),
-            ("ProRes", "prores"),
-            ("AV1", "av1"),
-            ("VP9", "vp9"),
-            ("Copy (no re-encode)", "copy_v"),
-        ],
+        default=_DEFAULT_CONTAINER[vcodec],
     )
 
     params: dict = {"container": container, "vcodec": vcodec}
@@ -110,14 +124,15 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if vcodec == "copy_v":
         pass
     elif vcodec == "prores":
-        profile = prompts.choose(
-            "ProRes profile:",
-            [("Proxy", "0"), ("LT", "1"), ("Standard 422", "2"), ("422 HQ", "3")],
-        )
+        params["prores_profile"] = prompts.choose("ProRes profile:", _PRORES_PROFILES, default="3")
         use_hw = hardware.has_encoder("prores_videotoolbox") and prompts.ask_confirm(
             "Use VideoToolbox hardware ProRes encoder?", default=True
         )
-        params.update({"prores_profile": profile, "engine": "hardware" if use_hw else "software"})
+        params["engine"] = "hardware" if use_hw else "software"
+    elif vcodec == "dnxhr":
+        params["dnxhr_profile"] = prompts.choose(
+            "DNxHR profile:", _DNXHR_PROFILES, default="dnxhr_hq"
+        )
     else:
         engine = _choose_engine(vcodec, hardware)
         params["engine"] = engine
@@ -134,6 +149,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             ("PCM / WAV", "pcm"),
             ("Copy (no re-encode)", "copy"),
         ],
+        default=_DEFAULT_AUDIO.get(vcodec, "aac"),
     )
     params["acodec"] = acodec
     return params
@@ -142,45 +158,44 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
 def _choose_engine(vcodec: str, hardware: HardwareCapabilities) -> str:
     codec_info = _VIDEO_CODECS[vcodec]
     options = [("Software (best quality/compression, slower)", "software")]
+    default = "software"
     if codec_info["hw"] and hardware.has_encoder(codec_info["hw"]):
         options.insert(0, ("Hardware / VideoToolbox (fast, uses media engine)", "hardware"))
+        default = "hardware"
     if len(options) == 1:
         return options[0][1]
-    return prompts.choose("Encoder:", options)
+    return prompts.choose("Encoder:", options, default=default)
 
 
 def _choose_quality(
     vcodec: str, engine: str, media: MediaInfo, hardware: HardwareCapabilities
 ) -> dict:
-    if prompts.ask_confirm(
-        "Pick from calculated compression presets (with estimated size)?", default=True
-    ):
-        rows = [
-            r
-            for r in preset_calc.estimate_presets(media, hardware)
-            if r.codec == vcodec and r.engine == engine
-        ]
-        if rows:
-            chosen = prompts.choose(
-                "Quality tier:",
-                [
-                    (f"{r.tier_name} — ~{r.estimated_size_mb}MB, {r.speed_note}", r)
-                    for r in rows
-                ],
-            )
-            return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}
+    """One menu: calculated compression tiers alongside a manual escape
+    hatch, defaulted to "Balanced" - compression is a single, clearly
+    labeled choice here, not a gate you have to get through first.
+    """
+    rows = [r for r in preset_calc.estimate_presets(vcodec, media, hardware) if r.engine == engine]
+    # Index-based values/default rather than handing InquirerPy the
+    # EncodePreset objects directly - see the identity-loss note on
+    # prompts.choose_preset.
+    options = [(f"{r.tier_name} — ~{r.estimated_size_mb}MB, {r.speed_note}", i) for i, r in enumerate(rows)]
+    options.append(("Manual (enter quality yourself)", -1))
+    default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
+
+    chosen_index = prompts.choose("Quality:", options, default=default_index)
+    if chosen_index >= 0:
+        chosen = rows[chosen_index]
+        return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}
 
     if engine == "hardware":
-        quality = prompts.ask_text(
-            "Quality (1-100, higher = better, larger):", default="65"
-        )
+        quality = prompts.ask_text("Quality (1-100, higher = better, larger):", default="65")
         return {"quality_mode": "hw_quality", "hw_quality": int(quality)}
 
-    default_crf = "32" if vcodec in ("av1", "vp9") else "23"
-    crf = prompts.ask_text(
-        "CRF (lower = higher quality/larger file):", default=default_crf
+    value = prompts.ask_text(
+        f"Manual quality ({_MANUAL_QUALITY_HINT[vcodec]}):",
+        default=_MANUAL_QUALITY_DEFAULT[vcodec],
     )
-    return {"quality_mode": "crf", "crf": int(crf)}
+    return {"quality_mode": "manual", "manual_value": int(value)}
 
 
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
@@ -191,10 +206,15 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
         output_args += ["-c:v", "copy"]
     elif vcodec == "prores":
         engine = params.get("engine", "software")
-        encoder = (
-            _VIDEO_CODECS_PRORES_HW if engine == "hardware" else _VIDEO_CODECS_PRORES_SW
-        )
+        encoder = "prores_videotoolbox" if engine == "hardware" else "prores_ks"
         output_args += ["-c:v", encoder, "-profile:v", params.get("prores_profile", "2")]
+    elif vcodec == "dnxhr":
+        profile = params.get("dnxhr_profile", "dnxhr_hq")
+        output_args += [
+            "-c:v", "dnxhd",
+            "-profile:v", profile,
+            "-pix_fmt", _DNXHR_PIXFMT[profile],
+        ]
     elif vcodec:
         codec_info = _VIDEO_CODECS[vcodec]
         engine = params.get("engine", "software")
@@ -217,19 +237,16 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
     )
 
 
-_VIDEO_CODECS_PRORES_SW = "prores_ks"
-_VIDEO_CODECS_PRORES_HW = "prores_videotoolbox"
-
-
 def _quality_args(vcodec: str, engine: str, params: dict) -> list[str]:
     if params.get("quality_mode") == "bitrate":
         return ["-b:v", f"{params['video_kbps']}k"]
     if params.get("quality_mode") == "hw_quality" or engine == "hardware":
         return ["-q:v", str(params.get("hw_quality", 65))]
-    crf = str(params.get("crf", 23))
+    value = str(params.get("manual_value", _MANUAL_QUALITY_DEFAULT[vcodec]))
+    flag = _MANUAL_QUALITY_FLAG[vcodec]
     if vcodec == "vp9":
-        return ["-crf", crf, "-b:v", "0"]
-    return ["-crf", crf]
+        return [flag, value, "-b:v", "0"]
+    return [flag, value]
 
 
 def output_extension(params: dict) -> str:

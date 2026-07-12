@@ -33,7 +33,12 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
         [
             sample_clip,  # ask_existing_path: input file
             "convert",  # choose: category
-            ffx_main.CATEGORIES[0].PRESETS[0],  # choose_preset: Web-friendly MP4
+            "h264",  # choose: video codec
+            "mp4",  # choose: container
+            "software",  # choose: encoder (engine)
+            -1,  # choose: Quality menu -> Manual
+            "23",  # ask_text: manual CRF
+            "aac",  # choose: audio codec
             True,  # ask_confirm: add another operation?
             "scale",  # choose: category
             None,  # choose_preset: Custom...
