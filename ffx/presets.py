@@ -14,11 +14,16 @@ _QUALITY_TIERS: dict[str, int] = {
     "Small (web share)": 2500,
     "Balanced": 5000,
     "High quality (archive)": 10000,
+    "Maximum (near-lossless)": 20000,
 }
 
 # codec -> relative bits-per-pixel efficiency vs H.264 baseline (1.0).
 # Lower means it needs less bitrate for the same perceived quality, so
 # the estimated target bitrate is scaled down for more efficient codecs.
+# Also used to scale the "Original quality" tier when the source and
+# target codecs differ, so switching to a more efficient codec doesn't
+# just copy the old bitrate straight over (that would waste space) and
+# switching to a less efficient one doesn't quietly lose quality.
 _CODEC_EFFICIENCY = {
     "h264": 1.0,
     "hevc": 0.65,
@@ -39,6 +44,15 @@ _SOFTWARE_ENCODER = {
 _HARDWARE_ENCODER = {
     "h264": "h264_videotoolbox",
     "hevc": "hevc_videotoolbox",
+}
+
+# Normalizes ffprobe's codec_name to the _CODEC_EFFICIENCY keys, for
+# scaling the "Original quality" tier relative to what the source
+# actually is.
+_SOURCE_CODEC_NORMALIZE = {
+    "h265": "hevc",
+    "mpeg2video": "mpeg2",
+    "vp8": "vp9",
 }
 
 
@@ -62,6 +76,9 @@ def estimate_presets(
     this machine for `codec`, so the caller can show them side by side
     with an estimated size and let the user pick with real tradeoffs in
     view, rather than presets that silently swap in a different codec.
+    The first tier, when derivable, is "Original quality" - matching the
+    source's own bitrate (adjusted for codec efficiency, so re-encoding
+    into a more/less efficient codec doesn't just copy the number over).
     """
     video = media.primary_video
     height = video.height if video and video.height else 1080
@@ -72,34 +89,64 @@ def estimate_presets(
     scale_factor = min(1.0, height / 1080) if height else 1.0
 
     rows: list[EncodePreset] = []
+
+    original_kbps = _source_video_kbps(media)
+    if original_kbps:
+        source_codec = _SOURCE_CODEC_NORMALIZE.get(video.codec_name, video.codec_name) if video else None
+        source_efficiency = _CODEC_EFFICIENCY.get(source_codec, 1.0)
+        target_kbps = max(300, round(original_kbps * (efficiency / source_efficiency)))
+        rows += _rows_for_tier("Original quality", codec, target_kbps, duration, hardware, "matches source")
+
     for tier_name, kbps_1080p in _QUALITY_TIERS.items():
         video_kbps = max(300, round(kbps_1080p * efficiency * scale_factor))
+        rows += _rows_for_tier(tier_name, codec, video_kbps, duration, hardware, None)
 
+    return rows
+
+
+def _rows_for_tier(
+    tier_name: str,
+    codec: str,
+    video_kbps: int,
+    duration: float,
+    hardware: HardwareCapabilities,
+    note_override: str | None,
+) -> list[EncodePreset]:
+    rows = [
+        _make_row(
+            tier_name,
+            codec,
+            "software",
+            _SOFTWARE_ENCODER[codec],
+            video_kbps,
+            duration,
+            note_override or "slower, best compression",
+        )
+    ]
+    hw_encoder = _HARDWARE_ENCODER.get(codec)
+    if hw_encoder and hardware.has_encoder(hw_encoder):
         rows.append(
             _make_row(
                 tier_name,
                 codec,
-                "software",
-                _SOFTWARE_ENCODER[codec],
+                "hardware",
+                hw_encoder,
                 video_kbps,
                 duration,
-                "slower, best compression",
+                note_override or "fast, uses Apple Silicon media engine",
             )
         )
-        hw_encoder = _HARDWARE_ENCODER.get(codec)
-        if hw_encoder and hardware.has_encoder(hw_encoder):
-            rows.append(
-                _make_row(
-                    tier_name,
-                    codec,
-                    "hardware",
-                    hw_encoder,
-                    video_kbps,
-                    duration,
-                    "fast, uses Apple Silicon media engine",
-                )
-            )
     return rows
+
+
+def _source_video_kbps(media: MediaInfo) -> float | None:
+    video = media.primary_video
+    if video and video.bit_rate:
+        return video.bit_rate / 1000
+    if media.bit_rate and media.duration:
+        estimate = media.bit_rate / 1000 - _AUDIO_BITRATE_KBPS
+        return estimate if estimate > 0 else None
+    return None
 
 
 def estimate_fixed_bitrate_size(base_kbps_1080p30: float, media: MediaInfo) -> float:
@@ -121,6 +168,15 @@ def estimate_fixed_bitrate_size(base_kbps_1080p30: float, media: MediaInfo) -> f
     fps_factor = fps / 30.0
     kbps = base_kbps_1080p30 * resolution_factor * fps_factor
     return round((kbps * duration) / 8 / 1024, 1)
+
+
+def humanize_size(size_mb: float) -> str:
+    """Format an estimated size in MB as a friendlier KB/MB/GB string."""
+    if size_mb >= 1024:
+        return f"{size_mb / 1024:.2f} GB"
+    if size_mb >= 1:
+        return f"{size_mb:.1f} MB"
+    return f"{max(size_mb * 1024, 1):.0f} KB"
 
 
 def _make_row(

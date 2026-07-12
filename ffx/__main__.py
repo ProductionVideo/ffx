@@ -3,15 +3,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from rich.panel import Panel
 from rich.table import Table
 
 from ffx import hardware, probe, recipes
 from ffx.analyse import run_qc, summary_rows
 from ffx.analyse import prompt as analyse_prompt
 from ffx.build import build_argv
-from ffx.models import FFmpegJob, OutputConfig, Recipe
+from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
 from ffx.operations import CATEGORIES, get_operation
-from ffx.runner import FFmpegRunError, run as run_ffmpeg
+from ffx.runner import FFmpegCancelled, FFmpegRunError, run as run_ffmpeg
 from ffx.ui import prompts
 from ffx.ui.theme import console, print_banner, print_step
 
@@ -28,6 +29,7 @@ def main() -> None:
     try:
         inputs = _select_inputs()
         representative = probe.probe(inputs[0])
+        _show_input_feedback(inputs, representative)
 
         ordered_ops = _select_operations(representative, caps)
         if ordered_ops is None:
@@ -53,6 +55,22 @@ def _select_inputs() -> list[Path]:
         console.print(f"Found {len(files)} file(s) in {path}", style="ffx.ok")
         return files
     return [path]
+
+
+def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
+    """Confirm what we're actually working with as soon as it's picked -
+    resolution/codec/duration/size, so a wrong file is obvious immediately
+    rather than after building a whole command around it.
+    """
+    title = representative.path.name if len(inputs) == 1 else f"{representative.path.name} (+ {len(inputs) - 1} more)"
+    table = Table(title=title, show_header=False)
+    table.add_column("Property", style="ffx.muted")
+    table.add_column("Value")
+    for key, value in summary_rows(representative):
+        if key == "File":
+            continue
+        table.add_row(key, value)
+    console.print(table)
 
 
 def _select_operations(media, caps):
@@ -186,18 +204,28 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         argv = build_argv(job)
         jobs.append((input_path, media, job, argv))
 
-    console.print("\n[bold]Command(s) to run:[/bold]")
-    for input_path, _, _, argv in jobs:
-        console.print(f"  [ffx.command]{' '.join(argv)}[/ffx.command]")
+    command_lines = "\n".join(f"[ffx.command]{' '.join(argv)}[/ffx.command]" for _, _, _, argv in jobs)
+    console.print()
+    console.print(
+        Panel(
+            command_lines,
+            title=f"Command{'s' if len(jobs) > 1 else ''} to run",
+            title_align="left",
+            border_style="ffx.step",
+        )
+    )
 
     if not prompts.ask_confirm(f"Run {'this command' if len(jobs) == 1 else f'these {len(jobs)} commands'}?", default=True):
         console.print("Cancelled.", style="ffx.muted")
         return
 
     for input_path, media, job, argv in jobs:
-        console.print(f"\n[ffx.step]Processing[/ffx.step] {input_path.name}")
+        console.print(f"\n[ffx.step]Processing[/ffx.step] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
         try:
             run_ffmpeg(argv, total_duration=media.duration, console=console)
+        except FFmpegCancelled:
+            console.print("Cancelled - partial output removed.", style="ffx.warn")
+            return
         except FFmpegRunError as exc:
             console.print(f"ffmpeg failed (exit {exc.returncode}):", style="ffx.error")
             console.print(exc.stderr_tail, style="ffx.muted")

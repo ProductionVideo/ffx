@@ -222,7 +222,7 @@ def _profile_choices(
     choices = []
     for label, key in profiles:
         size_mb = preset_calc.estimate_fixed_bitrate_size(kbps_1080p30[key], media)
-        choices.append((f"{label} — ~{size_mb}MB", key))
+        choices.append((f"{label} — ~{preset_calc.humanize_size(size_mb)}", key))
     return choices
 
 
@@ -249,7 +249,10 @@ def _choose_quality(
     # Index-based values/default rather than handing InquirerPy the
     # EncodePreset objects directly - see the identity-loss note on
     # prompts.choose_preset.
-    options = [(f"{r.tier_name} — ~{r.estimated_size_mb}MB, {r.speed_note}", i) for i, r in enumerate(rows)]
+    options = [
+        (f"{r.tier_name} — ~{preset_calc.humanize_size(r.estimated_size_mb)}, {r.speed_note}", i)
+        for i, r in enumerate(rows)
+    ]
     options.append(("Manual (enter quality yourself)", -1))
     default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
 

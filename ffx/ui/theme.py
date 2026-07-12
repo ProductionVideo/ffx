@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from InquirerPy import get_style
 from rich.console import Console
+from rich.rule import Rule
 from rich.theme import Theme
 
 FFX_THEME = Theme(
@@ -43,4 +44,5 @@ def print_banner() -> None:
 
 
 def print_step(number: int, total: int, title: str) -> None:
-    console.print(f"[ffx.step]Step {number}/{total}[/ffx.step]  {title}")
+    console.print()
+    console.print(Rule(f"[ffx.step]Step {number}/{total}[/ffx.step]  {title}", style="ffx.step", align="left"))

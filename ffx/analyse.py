@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ffx import presets as preset_calc
 from ffx.models import MediaInfo, Preset
 from ffx.ui import prompts
 
@@ -54,12 +55,21 @@ def prompt() -> dict:
     return {"checks": checks}
 
 
+def _humanize_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 def summary_rows(media: MediaInfo) -> list[tuple[str, str]]:
     rows = [
         ("File", str(media.path)),
         ("Format", media.format_long_name or media.format_name),
-        ("Duration", f"{media.duration:.2f}s"),
-        ("Size", f"{media.size / 1024 / 1024:.2f} MB"),
+        ("Duration", _humanize_duration(media.duration)),
+        ("Size", preset_calc.humanize_size(media.size / 1024 / 1024)),
         ("Overall bitrate", f"{media.bit_rate // 1000} kbps" if media.bit_rate else "-"),
     ]
     if media.primary_video:
