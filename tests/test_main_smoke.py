@@ -41,7 +41,7 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
             "160",  # ask_text: target width
             "bilinear",  # choose: algorithm
             False,  # ask_confirm: add another operation?
-            str(tmp_path),  # ask_text: output directory
+            tmp_path,  # ask_output_path: output directory
             True,  # ask_confirm: run the command?
             False,  # ask_confirm: save as recipe?
         ]
@@ -52,6 +52,7 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
     monkeypatch.setattr(prompts, "choose_preset", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "ask_confirm", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "ask_text", lambda *a, **k: next(answers))
+    monkeypatch.setattr(prompts, "ask_output_path", lambda *a, **k: next(answers))
 
     ffx_main.main()
 

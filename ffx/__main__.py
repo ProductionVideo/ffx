@@ -139,8 +139,8 @@ def _select_output(first_input: Path, ordered_ops) -> tuple[Path, str]:
     print_step(4, 5, "Where — choose where output goes")
     suffix = "-".join(module.name for module, _ in ordered_ops)
     default_dir = str(first_input.parent)
-    out_dir_str = prompts.ask_text("Output directory:", default=default_dir)
-    return Path(out_dir_str).expanduser().resolve(), suffix
+    out_dir = prompts.ask_output_path("Output directory:", default=default_dir)
+    return out_dir, suffix
 
 
 def _output_extension(ordered_ops, source_ext: str) -> str:
