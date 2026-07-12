@@ -58,7 +58,29 @@ _DEFAULT_AUDIO = {
     "dnxhr": "pcm",
 }
 
+# Which containers ffmpeg can actually mux each codec into on this build -
+# verified empirically (encode + ffprobe read-back), not assumed. A codec
+# writing "successfully" into an incompatible container can still produce
+# an unreadable file, so this gates the menu rather than just warning.
+_CONTAINER_COMPAT = {
+    "h264": {"mp4", "mov", "mkv", "avi", "ts", "mxf"},
+    "hevc": {"mp4", "mov", "mkv", "avi", "ts"},
+    "av1": {"mp4", "mkv", "webm", "avi"},
+    "vp9": {"mp4", "mkv", "webm", "avi"},
+    "prores": {"mov", "mkv", "avi", "mxf"},
+    "dnxhr": {"mov", "mkv", "avi", "mxf"},
+    "mpeg2": {"mp4", "mov", "mkv", "avi", "ts", "mxf"},
+}
+# Normalize ffprobe's codec_name to the keys above, for filtering the
+# container list on a "Copy (no re-encode)" pick, where we don't choose
+# the codec ourselves - it's whatever the source already is.
+_SOURCE_CODEC_ALIAS = {"mpeg2video": "mpeg2", "dnxhd": "dnxhr"}
+
 _PRORES_PROFILES = [("Proxy", "0"), ("LT", "1"), ("Standard 422", "2"), ("422 HQ", "3")]
+# Apple's approximate published data rates at 1920x1080/29.97fps (Mbit/s),
+# used only to show a ballpark output size - ProRes has no quality target,
+# the profile itself fixes the rate.
+_PRORES_KBPS_1080P30 = {"0": 45_000, "1": 102_000, "2": 147_000, "3": 220_000}
 
 _DNXHR_PROFILES = [
     ("LQ (low quality, offline)", "dnxhr_lq"),
@@ -74,6 +96,24 @@ _DNXHR_PIXFMT = {
     "dnxhr_hqx": "yuv422p10le",
     "dnxhr_444": "yuv444p10le",
 }
+# Avid's approximate published data rates at 1920x1080/29.97fps (Mbit/s).
+_DNXHR_KBPS_1080P30 = {
+    "dnxhr_lq": 36_000,
+    "dnxhr_sq": 75_000,
+    "dnxhr_hq": 145_000,
+    "dnxhr_hqx": 220_000,
+    "dnxhr_444": 365_000,
+}
+
+_CONTAINER_LABELS = [
+    ("MP4", "mp4"),
+    ("MOV", "mov"),
+    ("MKV", "mkv"),
+    ("WebM", "webm"),
+    ("MXF", "mxf"),
+    ("AVI", "avi"),
+    ("MPEG-TS", "ts"),
+]
 
 _AUDIO_CODECS = {
     "aac": {"encoder": "aac", "bitrate_k": 192},
@@ -105,18 +145,23 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         ],
         default="h264",
     )
+    compat_key = _compat_key_for(vcodec, media)
+    compatible_containers = _CONTAINER_COMPAT.get(compat_key)
+    container_choices = (
+        [c for c in _CONTAINER_LABELS if c[1] in compatible_containers]
+        if compatible_containers is not None
+        else _CONTAINER_LABELS
+    )
+    preferred_default = _DEFAULT_CONTAINER[vcodec]
+    container_default = (
+        preferred_default
+        if preferred_default in {key for _, key in container_choices}
+        else container_choices[0][1]
+    )
     container = prompts.choose(
         "Target container:",
-        [
-            ("MP4", "mp4"),
-            ("MOV", "mov"),
-            ("MKV", "mkv"),
-            ("WebM", "webm"),
-            ("MXF", "mxf"),
-            ("AVI", "avi"),
-            ("MPEG-TS", "ts"),
-        ],
-        default=_DEFAULT_CONTAINER[vcodec],
+        container_choices,
+        default=container_default,
     )
 
     params: dict = {"container": container, "vcodec": vcodec}
@@ -124,14 +169,18 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if vcodec == "copy_v":
         pass
     elif vcodec == "prores":
-        params["prores_profile"] = prompts.choose("ProRes profile:", _PRORES_PROFILES, default="3")
+        params["prores_profile"] = prompts.choose(
+            "ProRes profile:", _profile_choices(_PRORES_PROFILES, _PRORES_KBPS_1080P30, media), default="3"
+        )
         use_hw = hardware.has_encoder("prores_videotoolbox") and prompts.ask_confirm(
             "Use VideoToolbox hardware ProRes encoder?", default=True
         )
         params["engine"] = "hardware" if use_hw else "software"
     elif vcodec == "dnxhr":
         params["dnxhr_profile"] = prompts.choose(
-            "DNxHR profile:", _DNXHR_PROFILES, default="dnxhr_hq"
+            "DNxHR profile:",
+            _profile_choices(_DNXHR_PROFILES, _DNXHR_KBPS_1080P30, media),
+            default="dnxhr_hq",
         )
     else:
         engine = _choose_engine(vcodec, hardware)
@@ -153,6 +202,28 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     )
     params["acodec"] = acodec
     return params
+
+
+def _compat_key_for(vcodec: str, media: MediaInfo) -> str | None:
+    """Which _CONTAINER_COMPAT key applies, or None if unknown (don't filter)."""
+    if vcodec != "copy_v":
+        return vcodec
+    source = media.primary_video.codec_name if media.primary_video else None
+    if not source:
+        return None
+    source = _SOURCE_CODEC_ALIAS.get(source, source)
+    return source if source in _CONTAINER_COMPAT else None
+
+
+def _profile_choices(
+    profiles: list[tuple[str, str]], kbps_1080p30: dict[str, int], media: MediaInfo
+) -> list[tuple[str, str]]:
+    """Annotate profile labels with an estimated output size."""
+    choices = []
+    for label, key in profiles:
+        size_mb = preset_calc.estimate_fixed_bitrate_size(kbps_1080p30[key], media)
+        choices.append((f"{label} — ~{size_mb}MB", key))
+    return choices
 
 
 def _choose_engine(vcodec: str, hardware: HardwareCapabilities) -> str:

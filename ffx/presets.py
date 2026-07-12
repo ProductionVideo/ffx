@@ -102,6 +102,27 @@ def estimate_presets(
     return rows
 
 
+def estimate_fixed_bitrate_size(base_kbps_1080p30: float, media: MediaInfo) -> float:
+    """Estimate output size (MB) for a profile-based codec (ProRes, DNxHR).
+
+    These codecs don't take a quality target - the profile itself fixes
+    an approximate data rate. `base_kbps_1080p30` is that profile's
+    well-known rate at 1920x1080/30fps; scaled by actual resolution and
+    frame rate (uncapped, since these formats are used at native
+    resolution rather than a delivery target) to give a ballpark size.
+    """
+    video = media.primary_video
+    width = video.width if video and video.width else 1920
+    height = video.height if video and video.height else 1080
+    fps = (video.frame_rate if video else None) or 30.0
+    duration = media.duration or 0.0
+
+    resolution_factor = (width * height) / (1920 * 1080)
+    fps_factor = fps / 30.0
+    kbps = base_kbps_1080p30 * resolution_factor * fps_factor
+    return round((kbps * duration) / 8 / 1024, 1)
+
+
 def _make_row(
     tier_name: str,
     codec: str,
