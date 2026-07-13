@@ -316,6 +316,9 @@ def test_full_flow_in_app_scale_preset(sample_clip, tmp_path):
 
             await _wait_for_message(pilot, app, "recipe")
             await pilot.press("enter")  # default No
+
+            await _wait_for_message(pilot, app, "All done — what now?")
+            await pilot.press("down", "enter")  # Quit ffx
             await pilot.pause(0.3)
 
     asyncio.run(scenario())

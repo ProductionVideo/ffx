@@ -142,29 +142,37 @@ class FFXApp(App):
             theme.console.width = self._saved_console_width
 
     def _run_flow(self) -> None:
-        try:
-            self._flow()
-        except SystemExit as exc:
-            code = exc.code or 0
-            if code == 0:
-                self.call_from_thread(self.exit)
-            else:
-                self.call_from_thread(
-                    self.append_log,
-                    f"\x1b[1;31mFinished with errors (exit {code}) — Ctrl+Q to quit.\x1b[0m",
-                )
-            return
-        except Exception:
-            import traceback
+        from ffx.tui.screens import SelectScreen
 
-            self.call_from_thread(self.append_log, traceback.format_exc())
-            self.call_from_thread(
-                self.append_log, "\x1b[1;31mSomething broke — Ctrl+Q to quit.\x1b[0m"
+        while True:
+            failed = False
+            try:
+                self._flow()
+            except SystemExit as exc:
+                if exc.code:
+                    failed = True
+            except Exception:
+                import traceback
+
+                self.call_from_thread(self.append_log, traceback.format_exc())
+                failed = True
+
+            message = (
+                "That run hit trouble (details in the log) — what now?"
+                if failed
+                else "All done — what now?"
             )
-            return
-        self.call_from_thread(
-            self.append_log, "\x1b[2mAll done — Ctrl+Q to quit.\x1b[0m"
-        )
+            choice, _ = session.prompt(
+                SelectScreen(
+                    message,
+                    [("Start another pipeline", "again"), ("Quit ffx", "quit")],
+                    default="again",
+                )
+            )
+            if choice != "again":
+                self.call_from_thread(self.exit)
+                return
+            self.call_from_thread(self.reset_panes)
 
     # ---- called (via call_from_thread) by ffx.tui.session ----
 
@@ -175,6 +183,10 @@ class FFXApp(App):
 
     def set_media_pane(self, content: Text) -> None:
         self.query_one("#media-pane", Static).update(content)
+
+    def reset_panes(self) -> None:
+        self.query_one("#media-pane", Static).update("No file picked yet.")
+        self.query_one("#pipeline-pane", Static).update("Pipeline is empty.")
 
     def set_pipeline_pane(self, content: Text) -> None:
         self.query_one("#pipeline-pane", Static).update(content)
