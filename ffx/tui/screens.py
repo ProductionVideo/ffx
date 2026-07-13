@@ -169,7 +169,15 @@ class _PathInput(Input):
     def _on_paste(self, event: events.Paste) -> None:
         from ffx.ui.prompts import clean_path_input
 
-        self.insert_text_at_cursor(clean_path_input(event.text).strip())
+        cleaned = clean_path_input(event.text).strip()
+        if cleaned and Path(cleaned).expanduser().exists():
+            # A dropped real path replaces whatever's in the box (usually
+            # the default) - inserting it mid-default would splice two
+            # paths together.
+            self.value = cleaned
+            self.cursor_position = len(cleaned)
+        else:
+            self.insert_text_at_cursor(cleaned)
         event.stop()
         event.prevent_default()
 
@@ -207,6 +215,18 @@ class PathScreen(TextScreen):
         yield _PathInput(value=self._default)
         yield Static("", classes="prompt-path-status")
         yield Static("", classes="prompt-error")
+
+    def on_mount(self) -> None:
+        # A file dropped on the window before this question appeared (the
+        # app stashes it - see FFXApp.on_paste) pre-fills the box; an
+        # output-directory question only claims a dropped folder.
+        take = getattr(self.app, "take_pending_drop", None)
+        pending = take(want_dir=not self._must_exist) if take else None
+        box = self.query_one(Input)
+        if pending:
+            box.value = pending
+            box.cursor_position = len(pending)
+        box.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         from ffx.ui.prompts import clean_path_input

@@ -124,6 +124,67 @@ def test_path_screen_rejects_missing_path():
     assert drive(screen, "enter", before=set_value) is None
 
 
+def test_drop_anywhere_is_stashed_and_prefills_next_path_screen(tmp_path):
+    """A file dropped while some other screen is up gets remembered and
+    fills the next path question; a dropped media file is NOT claimed by
+    an output-directory question (want_dir)."""
+    clip = tmp_path / "dropped.mp4"
+    clip.touch()
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # No path screen up: the drop lands on the base screen.
+            app.on_paste(events.Paste(str(clip).replace(" ", "\\ ")))
+            stashed = app._pending_drop
+            # An output-dir question must not claim the dropped file...
+            not_claimed = app.take_pending_drop(want_dir=True)
+            # ...but an input question does.
+            claimed = app.take_pending_drop(want_dir=False)
+            drained = app.take_pending_drop(want_dir=False)
+            return stashed, not_claimed, claimed, drained
+
+    stashed, not_claimed, claimed, drained = asyncio.run(scenario())
+    assert stashed == str(clip)
+    assert not_claimed is None
+    assert claimed == str(clip)
+    assert drained is None
+
+
+def test_drop_routes_into_open_path_screen_replacing_default(tmp_path):
+    clip = tmp_path / "My Movie.mp4"
+    clip.touch()
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.push_screen(PathScreen("Path:", default="/somewhere/else", must_exist=True))
+            await pilot.pause()
+            app.on_paste(events.Paste(str(clip).replace(" ", "\\ ")))
+            await pilot.pause()
+            return app.screen.query_one(Input).value
+
+    assert asyncio.run(scenario()) == str(clip)
+
+
+def test_pending_drop_prefills_path_screen_on_mount(tmp_path):
+    clip = tmp_path / "queued.mp4"
+    clip.touch()
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.on_paste(events.Paste(str(clip)))
+            app.push_screen(PathScreen("Path:", must_exist=True))
+            await pilot.pause()
+            return app.screen.query_one(Input).value
+
+    assert asyncio.run(scenario()) == str(clip)
+
+
 def test_progress_bar_is_actually_visible():
     """Regression: the label used to take 1fr and shove the bar off-screen."""
 

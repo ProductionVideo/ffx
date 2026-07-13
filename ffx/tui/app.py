@@ -8,13 +8,15 @@ place as the flow reports them through ffx.tui.session.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, ProgressBar, RichLog, Static
+from textual.widgets import Footer, Input, ProgressBar, RichLog, Static
 
 from ffx.tui import session
 from ffx.ui import theme
@@ -109,6 +111,7 @@ class FFXApp(App):
         self._saved_console_width = None
         self._progress_handle: Optional[session.ProgressHandle] = None
         self._progress_total: float = 0.0
+        self._pending_drop: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield Static("ffx — ffmpeg, for the simple", id="banner")
@@ -195,3 +198,47 @@ class FFXApp(App):
     def action_cancel_encode(self) -> None:
         if self._progress_handle is not None:
             self._progress_handle.cancel_event.set()
+
+    # ---- app-wide drag-and-drop ----
+
+    def on_paste(self, event: events.Paste) -> None:
+        """A file dropped anywhere on the window, any time.
+
+        A drop reaches the app as a Paste that no focused Input consumed
+        (a focused path box handles its own). If the text is a real path:
+        route it into the path screen that's up, or remember it for the
+        next path question and say so - instead of the drop dying
+        silently because the "right" widget didn't have focus.
+        """
+        from ffx.tui.screens import PathScreen
+        from ffx.ui.prompts import clean_path_input
+
+        text = clean_path_input(event.text).strip()
+        if not text or not Path(text).expanduser().exists():
+            return
+        event.stop()
+        if isinstance(self.screen, PathScreen):
+            box = self.screen.query_one(Input)
+            box.value = text
+            box.cursor_position = len(text)
+            box.focus()
+        else:
+            self._pending_drop = text
+            self.notify(
+                f"Got {Path(text).name} — it'll be filled in at the next path question.",
+                timeout=5,
+            )
+
+    def take_pending_drop(self, *, want_dir: bool) -> Optional[str]:
+        """Hand a stashed drop to the path screen that can use it.
+
+        An output-directory question only claims a dropped folder - a
+        dropped media file stays stashed rather than being misfiled as
+        the place to write results.
+        """
+        if self._pending_drop is None:
+            return None
+        if want_dir and not Path(self._pending_drop).expanduser().is_dir():
+            return None
+        value, self._pending_drop = self._pending_drop, None
+        return value
