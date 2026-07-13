@@ -9,7 +9,9 @@ build(), recipes, and the classic wizard all stay untouched.
 """
 from __future__ import annotations
 
+from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
@@ -48,6 +50,15 @@ _PROFILE_SOURCES = {
 
 
 class ConvertScreen(PromptScreen):
+    """Keyboard-first: Tab/Shift+Tab between fields, ←/→ cycles a field's
+    value without opening its dropdown, Ctrl+S adds from anywhere, Enter
+    in the value box submits. The widgets stay clickable - the mouse is
+    an option, never a requirement."""
+
+    BINDINGS = PromptScreen.BINDINGS + [
+        Binding("ctrl+s", "add", "Add to pipeline", priority=True),
+    ]
+
     DEFAULT_CSS = PromptScreen.DEFAULT_CSS + """
     ConvertScreen .form-row {
         height: auto;
@@ -73,7 +84,7 @@ class ConvertScreen(PromptScreen):
     def __init__(self, media: MediaInfo, hardware: HardwareCapabilities):
         super().__init__(
             "Convert — everything on one screen",
-            hint="Tab between fields; estimates update live.",
+            hint="Tab: next field · ←/→: change value · Ctrl+S: add · estimates update live.",
             back_enabled=True,
         )
         self._media = media
@@ -221,12 +232,39 @@ class ConvertScreen(PromptScreen):
             box.value = convert_op._MANUAL_QUALITY_DEFAULT[vcodec]
         row.display = True
 
+    # ---- keyboard-first navigation ----
+
+    def on_key(self, event: events.Key) -> None:
+        """←/→ steps the focused Select through its options in place -
+        the fast path for keyboard users, no dropdown round-trip."""
+        if event.key not in ("left", "right"):
+            return
+        focused = self.focused
+        if not isinstance(focused, Select) or focused.expanded:
+            return
+        values = [value for _, value in focused._options]
+        if not values:
+            return
+        try:
+            index = values.index(focused.value)
+        except ValueError:
+            index = 0
+        step = 1 if event.key == "right" else -1
+        focused.value = values[(index + step) % len(values)]
+        event.stop()
+
     # ---- submit ----
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def action_add(self) -> None:
         params = self._collect()
         if params is not None:
             self.dismiss((params, False))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_add()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.action_add()
 
     def _collect(self) -> dict | None:
         vcodec = self.query_one("#codec", Select).value
