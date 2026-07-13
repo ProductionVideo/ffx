@@ -45,6 +45,12 @@ curl -LsSf https://raw.githubusercontent.com/ProductionVideo/ffx/main/install.sh
 
 ffx also re-checks for ffmpeg every launch and walks you through installing it if it's gone.
 
+Or with Homebrew (installs ffmpeg as a dependency automatically):
+
+```sh
+brew install ProductionVideo/ffx/ffx
+```
+
 <details>
 <summary>Manual install</summary>
 
