@@ -79,13 +79,6 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
     console.print(table)
 
 
-_CATEGORY_GROUP = {
-    "convert": "Video", "cut": "Video", "scale": "Video", "crop": "Video", "time": "Video",
-    "sound": "Audio",
-    "metadata": "Fix & Info", "repair": "Fix & Info",
-}
-
-
 def _select_operations(media, caps):
     print_step(2, 5, "What — build your pipeline")
 
@@ -96,23 +89,17 @@ def _select_operations(media, caps):
         if ordered_ops:
             _print_pipeline(ordered_ops, media, caps)
 
-        groups: dict[str, list[tuple[str, str]]] = {"Video": [], "Audio": [], "Fix & Info": []}
-        for m in CATEGORIES:
-            label = f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}"
-            groups[_CATEGORY_GROUP.get(m.name, "Fix & Info")].append((label, m.name))
-        groups["Fix & Info"].append(("◎ Analyse — inspect it, nothing changes", "analyse"))
-
-        more = []
+        menu = [
+            (f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}", m.name)
+            for m in CATEGORIES
+        ]
+        menu.append(("◎ Analyse — inspect it, nothing changes", "analyse"))
         if saved_recipes:
-            more.append(("★ Recipes — reuse a saved pipeline", "recipes"))
+            menu.append(("★ Recipes — reuse a saved pipeline", "recipes"))
         if ordered_ops:
-            more.append(("✓ Done — send it", "done"))
+            menu.append(("✓ Done — send it", "done"))
 
-        group_list = [(label, items) for label, items in groups.items() if items]
-        if more:
-            group_list.append(("More", more))
-
-        choice = prompts.fuzzy_grouped("What next?", group_list, hint="Type to search, or arrow through the list.")
+        choice = prompts.choose("What next?", menu)
 
         if choice == "done":
             break

@@ -131,7 +131,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     # container, right audio codec, right engine/profile) so switching
     # codec is the one real decision - every other prompt is an Enter to
     # accept the default, or an arrow-key away from overriding it.
-    vcodec = prompts.fuzzy(
+    vcodec = prompts.choose(
         "Video codec:",
         [
             ("H.264", "h264"),
@@ -158,7 +158,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         if preferred_default in {key for _, key in container_choices}
         else container_choices[0][1]
     )
-    container = prompts.fuzzy(
+    container = prompts.choose(
         "Target container:",
         container_choices,
         default=container_default,
@@ -177,7 +177,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         )
         params["engine"] = "hardware" if use_hw else "software"
     elif vcodec == "dnxhr":
-        params["dnxhr_profile"] = prompts.fuzzy(
+        params["dnxhr_profile"] = prompts.choose(
             "DNxHR profile:",
             _profile_choices(_DNXHR_PROFILES, _DNXHR_KBPS_1080P30, media),
             default="dnxhr_hq",
@@ -187,7 +187,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         params["engine"] = engine
         params.update(_choose_quality(vcodec, engine, media, hardware))
 
-    acodec = prompts.fuzzy(
+    acodec = prompts.choose(
         "Audio codec:",
         [
             ("AAC", "aac"),
@@ -258,7 +258,7 @@ def _choose_quality(
     options.append(("Manual", -1))
     default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
 
-    chosen_index = prompts.fuzzy(
+    chosen_index = prompts.choose(
         "Quality:", options, default=default_index, hint="Sizes are estimates, not guarantees."
     )
     if chosen_index >= 0:

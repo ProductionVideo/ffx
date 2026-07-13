@@ -53,8 +53,6 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
 
     monkeypatch.setattr(prompts, "ask_existing_path", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "choose", lambda *a, **k: next(answers))
-    monkeypatch.setattr(prompts, "fuzzy", lambda *a, **k: next(answers))
-    monkeypatch.setattr(prompts, "fuzzy_grouped", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "choose_preset", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "ask_confirm", lambda *a, **k: next(answers))
     monkeypatch.setattr(prompts, "ask_text", lambda *a, **k: next(answers))

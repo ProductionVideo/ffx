@@ -31,7 +31,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if preset is not None:
         return dict(preset.values)
 
-    mode = prompts.fuzzy(
+    mode = prompts.choose(
         "What needs fixing?",
         [
             ("Faststart (move metadata to the front)", "faststart"),

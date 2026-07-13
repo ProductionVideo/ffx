@@ -28,8 +28,6 @@ INQUIRER_STYLE = get_style(
         "question": "bold",
         "answered_question": "bold",
         "pointer": "#00afff bold",
-        "fuzzy_prompt": "#00afff",
-        "fuzzy_match": "bold underline",
         "marker": "#00afff bold",
     },
     style_override=True,

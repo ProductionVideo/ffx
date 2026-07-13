@@ -183,68 +183,6 @@ def ask_float(
     return float(value)
 
 
-def fuzzy(
-    message: str,
-    choices: list[tuple[str, Any]],
-    *,
-    default: Any = None,
-    hint: str = "",
-) -> Any:
-    """Type-ahead filterable menu for longer choice lists - same
-    (label, value) tuple API as choose(), but you can type to narrow
-    instead of arrow-keying through everything.
-
-    Unlike inquirer.select, inquirer.fuzzy's own `default` pre-fills the
-    *search text* rather than pre-selecting a matching choice - fine when
-    a value happens to be a substring of its own label (e.g. "h264" ~
-    "H.264"), but silently wrong the moment it isn't (an index, a key
-    like "dnxhr_hq" with no textual overlap). So instead: reorder the
-    default to the front of the list and never touch fuzzy's own
-    default/search text - the cursor starting position does the same job
-    without depending on fuzzy text-matching an arbitrary internal value.
-    """
-    ordered = choices
-    if default is not None:
-        match = next((c for c in choices if c[1] == default), None)
-        if match is not None:
-            ordered = [match] + [c for c in choices if c is not match]
-    return inquirer.fuzzy(
-        message=message,
-        choices=[Choice(value=value, name=label) for label, value in ordered],
-        long_instruction=hint,
-        style=INQUIRER_STYLE,
-        qmark="?",
-    ).execute()
-
-
-def fuzzy_grouped(
-    message: str,
-    groups: list[tuple[str, list[tuple[str, Any]]]],
-    *,
-    hint: str = "",
-) -> Any:
-    """Type-ahead filterable menu with a bracketed group tag on each
-    label - groups is [(section_label, [(choice_label, value), ...])].
-
-    InquirerPy's fuzzy prompt explicitly rejects Separator (raises
-    InvalidArgument), so true section dividers aren't an option here;
-    the group tag is the closest equivalent that still fuzzy-matches
-    (typing "audio" surfaces everything tagged [Audio]).
-    """
-    items: list[Any] = []
-    for section_label, section_choices in groups:
-        items.extend(
-            Choice(value=value, name=f"[{section_label}] {label}") for label, value in section_choices
-        )
-    return inquirer.fuzzy(
-        message=message,
-        choices=items,
-        long_instruction=hint,
-        style=INQUIRER_STYLE,
-        qmark="?",
-    ).execute()
-
-
 def multi_choose(
     message: str,
     choices: list[tuple[str, Any]],

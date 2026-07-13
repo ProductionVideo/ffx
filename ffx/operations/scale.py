@@ -52,7 +52,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if preset is not None:
         return dict(preset.values)
 
-    mode = prompts.fuzzy(
+    mode = prompts.choose(
         "How do you want to scale?",
         [
             ("By width", "width"),

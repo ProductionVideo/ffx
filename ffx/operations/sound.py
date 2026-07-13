@@ -36,7 +36,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if preset is not None:
         return dict(preset.values)
 
-    mode = prompts.fuzzy(
+    mode = prompts.choose(
         "What do you want to do with the audio?",
         [
             ("Extract audio (drop the video)", "extract"),
@@ -63,7 +63,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "mute"}
 
     if mode == "channels":
-        action = prompts.fuzzy(
+        action = prompts.choose(
             "Channel action:",
             [
                 ("Downmix to mono", "downmix"),
@@ -76,7 +76,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "channels", "action": action}
 
     if mode == "volume":
-        method = prompts.fuzzy(
+        method = prompts.choose(
             "How?",
             [
                 ("Loudness normalize (streaming, -14 LUFS)", "loudnorm_streaming"),
