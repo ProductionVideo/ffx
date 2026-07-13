@@ -20,6 +20,7 @@ Operations compose into a pipeline — queue several against one file, or agains
 | **Thumbnail** | Grab a frame as PNG/JPEG, or an evenly sampled contact-sheet grid |
 | **Orientate** | Rotate / flip |
 | **Colour** | Brightness, contrast, saturation, temperature |
+| **Filters** | Stock-effect catalogue: sharpen, blur, denoise, deband, grain, vignette, sepia, pixelate, edge sketch, chromatic aberration, stabilize, fades, deinterlace, straighten |
 | **Text** | Burn in text overlays (`drawtext`) |
 | **Caption** | Burn in a subtitle file, or attach it as a selectable track |
 | **Timecode** | Set the start timecode for NLEs, or burn a running TC window |

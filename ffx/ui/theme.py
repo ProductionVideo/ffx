@@ -28,6 +28,7 @@ CATEGORY_COLORS = {
     "crop": "#af87ff",
     "orientate": "#d7ff5f",
     "colour": "#ff5fd7",
+    "filters": "#ff87af",
     "text": "#5fffd7",
     "caption": "#5fafff",
     "timecode": "#d7af5f",
