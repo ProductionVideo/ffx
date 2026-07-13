@@ -10,7 +10,7 @@ description = "Trim, slice, or extract a clip"
 _MODE_LABELS = {
     "from_start": "Trim from a point to the end",
     "duration": "Extract a fixed duration",
-    "between": "Cut between two timestamps",
+    "between": "Cut between two points",
 }
 
 
@@ -23,15 +23,41 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     )
     params = {"mode": mode, "reencode": reencode}
 
-    params["start"] = prompts.ask_timestamp(
-        "Start timestamp (seconds or HH:MM:SS):", default="0"
+    # Frame-number entry only makes sense once we know the frame rate to
+    # convert against - offered for either mode, not just frame-accurate,
+    # since a fast/keyframe-snapped cut is still fine being *specified* by
+    # frame even though ffmpeg will snap it to the nearest keyframe.
+    fps = media.primary_video.frame_rate if media.primary_video else None
+    by_frame = fps and prompts.choose(
+        "Specify cut points by:",
+        [("Timestamp (seconds or HH:MM:SS)", False), ("Frame number", True)],
+        default=False,
     )
-    if params["mode"] == "duration":
-        params["duration"] = prompts.ask_timestamp("Duration (seconds or HH:MM:SS):", default="10")
-    elif params["mode"] == "between":
-        params["end"] = prompts.ask_timestamp("End timestamp (seconds or HH:MM:SS):", default="10")
+
+    if by_frame:
+        start_frame = prompts.ask_int("Start frame:", default=0, min_allowed=0)
+        params["start"] = _frame_to_timestamp(start_frame, fps)
+        params["start_frame"] = start_frame
+        if mode == "duration":
+            duration_frames = prompts.ask_int("Duration (frames):", default=round(10 * fps), min_allowed=1)
+            params["duration"] = _frame_to_timestamp(duration_frames, fps)
+            params["duration_frames"] = duration_frames
+        elif mode == "between":
+            end_frame = prompts.ask_int("End frame:", default=round(10 * fps), min_allowed=0)
+            params["end"] = _frame_to_timestamp(end_frame, fps)
+            params["end_frame"] = end_frame
+    else:
+        params["start"] = prompts.ask_timestamp("Start timestamp (seconds or HH:MM:SS):", default="0")
+        if mode == "duration":
+            params["duration"] = prompts.ask_timestamp("Duration (seconds or HH:MM:SS):", default="10")
+        elif mode == "between":
+            params["end"] = prompts.ask_timestamp("End timestamp (seconds or HH:MM:SS):", default="10")
 
     return params
+
+
+def _frame_to_timestamp(frame: int, fps: float) -> str:
+    return f"{frame / fps:.6f}"
 
 
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
@@ -68,6 +94,12 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
 
 
 def _describe(mode: str, params: dict) -> str:
+    if "start_frame" in params:
+        if mode == "duration":
+            return f"Cut {params.get('duration_frames')} frames starting at frame {params.get('start_frame')}"
+        if mode == "between":
+            return f"Cut from frame {params.get('start_frame')} to frame {params.get('end_frame')}"
+        return f"Trim from frame {params.get('start_frame')} to the end"
     if mode == "duration":
         return f"Cut {params.get('duration')} starting at {params.get('start')}"
     if mode == "between":

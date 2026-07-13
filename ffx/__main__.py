@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
-from ffx import hardware, presets as preset_calc, probe, recipes
+from ffx import hardware, preflight, presets as preset_calc, probe, recipes
 from ffx.analyse import run_qc, summary_rows
 from ffx.analyse import prompt as analyse_prompt
-from ffx.build import build_argv
+from ffx.build import build_argv, build_two_pass_argvs, needs_two_pass
 from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
 from ffx.operations import CATEGORIES, get_operation
 from ffx.runner import FFmpegCancelled, FFmpegRunError, run as run_ffmpeg
@@ -25,34 +27,59 @@ _MEDIA_EXTENSIONS = {
 
 def main() -> None:
     print_banner()
+    if not preflight.check():
+        sys.exit(1)
     caps = hardware.detect()
 
     try:
-        inputs = _select_inputs()
-        representative = probe.probe(inputs[0])
-        _show_input_feedback(inputs, representative)
+        while True:
+            inputs = _select_inputs()
+            representative = probe.probe(inputs[0])
+            _show_input_feedback(inputs, representative)
 
-        ordered_ops = _select_operations(representative, caps)
-        if ordered_ops is None:
-            console.print("Nothing queued, nothing to do. Come back when you're ready.", style="ffx.muted")
-            return
+            ordered_ops = None
+            output_dir = suffix = None
+            stage = "operations"
+            restart = False
 
-        output_dir, suffix = _select_output(inputs[0], ordered_ops)
+            while True:
+                if stage == "operations":
+                    ordered_ops = _select_operations(representative, caps, ordered_ops)
+                    if ordered_ops is None:
+                        # Backed all the way out of the (now empty) pipeline
+                        # menu - nothing left to back into but a new file.
+                        restart = True
+                        break
+                    stage = "output"
+                elif stage == "output":
+                    result = _select_output(inputs[0], ordered_ops)
+                    if result is None:
+                        stage = "operations"
+                        continue
+                    output_dir, suffix = result
+                    stage = "confirm"
+                elif stage == "confirm":
+                    if _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) == "back":
+                        stage = "output"
+                        continue
+                    break
 
-        _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps)
+            if not restart:
+                break
+            console.print("Alright, let's pick a different file.", style="ffx.muted")
     except KeyboardInterrupt:
         console.print("\nAlright, bailing.", style="ffx.muted")
         sys.exit(130)
 
 
 _CATEGORY_ICON = {
-    "convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "time": "◷", "sound": "♪",
-    "metadata": "▤", "repair": "✚",
+    "convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "orientate": "⟳", "colour": "◐",
+    "text": "𝐓", "composite": "⧉", "time": "◷", "sound": "♪", "metadata": "▤", "repair": "✚",
 }
 
 
 def _select_inputs() -> list[Path]:
-    print_step(1, 5, "Where — pick your input")
+    print_step(1, 5, "Pick your input")
     path = prompts.ask_existing_path("Path to a media file or directory:")
     if path.is_dir():
         files = sorted(p for p in path.iterdir() if p.suffix.lower() in _MEDIA_EXTENSIONS)
@@ -70,7 +97,7 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
     rather than after building a whole command around it.
     """
     title = representative.path.name if len(inputs) == 1 else f"{representative.path.name} (+ {len(inputs) - 1} more)"
-    table = Table(title=title, show_header=False, box=box.SQUARE, border_style="ffx.accent")
+    table = Table(title=title, show_header=False, box=box.SQUARE, border_style="ffx.border")
     table.add_column("Property", style="ffx.muted")
     table.add_column("Value")
     for key, value in summary_rows(representative):
@@ -85,15 +112,20 @@ def _add_field_row(table: Table, key: str, value: str) -> None:
     table.add_row(key, f"[bold {color}]{value}[/]" if color else f"[bold]{value}[/]")
 
 
-def _select_operations(media, caps):
-    print_step(2, 5, "What — build your pipeline")
+def _select_operations(media, caps, ordered_ops=None):
+    print_step(2, 5, "Build your pipeline")
 
-    ordered_ops: list[tuple[object, dict]] = []
-    saved_recipes = recipes.list_recipes()
+    ordered_ops = list(ordered_ops or [])
 
     while True:
         if ordered_ops:
             _print_pipeline(ordered_ops, media, caps)
+
+        # Re-listed every loop (cheap - just a directory glob), so a
+        # delete inside the Recipes flow is reflected the next time this
+        # menu is shown, rather than sitting stale for the rest of the
+        # session.
+        saved_recipes = recipes.list_recipes()
 
         menu = [
             (f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}", m.name)
@@ -105,7 +137,19 @@ def _select_operations(media, caps):
         if ordered_ops:
             menu.append(("✓ Done — send it", "done"))
 
-        choice = prompts.choose("What next?", menu)
+        choice = prompts.run_wizard(
+            prompts.choose, "What next?", menu, default="done" if ordered_ops else None
+        )
+
+        if choice is None:
+            # Backed out of this menu itself, not one of its sub-flows -
+            # undo the most recently queued operation if there is one,
+            # otherwise there's nothing left here to back into.
+            if ordered_ops:
+                removed, _ = ordered_ops.pop()
+                console.print(f"Removed {removed.display_name} from the pipeline.", style="ffx.muted")
+                continue
+            return None
 
         if choice == "done":
             break
@@ -113,14 +157,19 @@ def _select_operations(media, caps):
             _run_analyse(media)
             continue
         if choice == "recipes":
-            ordered_ops = _pick_recipe(saved_recipes)
+            picked = _pick_recipe(saved_recipes)
+            if picked is not None:
+                ordered_ops = picked
             continue
 
         module = get_operation(choice)
-        params = module.prompt(media, caps)
+        params = prompts.run_wizard(module.prompt, media, caps)
+        if params is None:
+            console.print(f"Cancelled {module.display_name}.", style="ffx.muted")
+            continue
         ordered_ops.append((module, params))
 
-    return ordered_ops or None
+    return ordered_ops
 
 
 def _print_pipeline(ordered_ops, media, caps) -> None:
@@ -128,18 +177,20 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
     for i, (module, params) in enumerate(ordered_ops, 1):
         op = module.build(params, media, caps)
         icon = _CATEGORY_ICON.get(module.name, "▸")
-        color = CATEGORY_COLORS.get(module.name, "#00afff")
+        color = CATEGORY_COLORS.get(module.name, "grey70")
         lines.append(
             f"[ffx.ok]{i}.[/ffx.ok] [bold {color}]{icon} {module.display_name}[/]  {op.description}"
         )
     console.print(
-        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.accent", box=box.SQUARE)
+        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.border", box=box.SQUARE)
     )
 
 
 def _run_analyse(media) -> None:
-    params = analyse_prompt()
-    table = Table(title=f"Analysis: {media.path.name}", box=box.SQUARE, border_style="ffx.accent")
+    params = prompts.run_wizard(analyse_prompt)
+    if params is None:
+        return
+    table = Table(title=f"Analysis: {media.path.name}", box=box.SQUARE, border_style="ffx.border")
     table.add_column("Property", style="ffx.muted")
     table.add_column("Value")
     for key, value in summary_rows(media):
@@ -147,7 +198,7 @@ def _run_analyse(media) -> None:
     console.print(table)
 
     if params["checks"]:
-        findings = run_qc(media.path, params["checks"])
+        findings = run_qc(media.path, params["checks"], media.duration, console)
         if "black" in params["checks"]:
             _print_findings("Black sections", findings.black_sections, "start={0:.2f}s end={1:.2f}s dur={2:.2f}s")
         if "silence" in params["checks"]:
@@ -168,11 +219,26 @@ def _print_findings(title: str, sections: list, fmt: str) -> None:
         console.print("  " + fmt.format(*section))
 
 
-def _pick_recipe(saved_recipes: list[Recipe]) -> list[tuple[object, dict]]:
-    recipe = prompts.choose(
-        "Which recipe?",
-        [(f"★ {r.name} — {r.description}", r) for r in saved_recipes],
-    )
+_DELETE_RECIPES = "__ffx_delete_recipes__"
+
+
+def _pick_recipe(saved_recipes: list[Recipe]):
+    # Selection is by index rather than handing the Recipe object itself
+    # to InquirerPy as the Choice value - a dataclass instance round-
+    # tripped through select/checkbox has been observed coming back as a
+    # plain dict (confirmed directly), the same issue prompts.choose_preset
+    # already works around.
+    choices = [(f"★ {r.name} — {r.description}", i) for i, r in enumerate(saved_recipes)]
+    choices.append(("✕ Delete recipes...", _DELETE_RECIPES))
+    choice = prompts.run_wizard(prompts.choose, "Which recipe?", choices)
+
+    if choice == _DELETE_RECIPES:
+        _delete_recipes(saved_recipes)
+        return None
+    if choice is None:
+        return None
+
+    recipe = saved_recipes[choice]
     ordered_ops = []
     for entry in recipe.operations:
         module = get_operation(entry["name"])
@@ -181,11 +247,38 @@ def _pick_recipe(saved_recipes: list[Recipe]) -> list[tuple[object, dict]]:
     return ordered_ops
 
 
-def _select_output(first_input: Path, ordered_ops) -> tuple[Path, str]:
-    print_step(4, 5, "Where — pick your output")
+def _delete_recipes(saved_recipes: list[Recipe]) -> None:
+    choices = [(f"★ {r.name} — {r.description}", i) for i, r in enumerate(saved_recipes)]
+    selected_indexes = prompts.run_wizard(
+        prompts.multi_choose,
+        "Delete which recipe(s)? (space to toggle, enter to confirm)",
+        choices,
+    )
+    if not selected_indexes:
+        console.print("Nothing deleted.", style="ffx.muted")
+        return
+    to_delete = [saved_recipes[i] for i in selected_indexes]
+
+    names = ", ".join(r.name for r in to_delete)
+    confirmed = prompts.run_wizard(
+        prompts.ask_confirm, f"Delete {names}? This can't be undone.", default=False
+    )
+    if not confirmed:
+        console.print("Nothing deleted.", style="ffx.muted")
+        return
+
+    for recipe in to_delete:
+        recipes.delete(recipe.name)
+    console.print(f"Deleted {names}.", style="ffx.ok")
+
+
+def _select_output(first_input: Path, ordered_ops):
+    print_step(4, 5, "Pick your output")
     suffix = "-".join(module.name for module, _ in ordered_ops)
     default_dir = str(first_input.parent)
-    out_dir = prompts.ask_output_path("Output directory:", default=default_dir)
+    out_dir = prompts.run_wizard(prompts.ask_output_path, "Output directory:", default=default_dir)
+    if out_dir is None:
+        return None
     return out_dir, suffix
 
 
@@ -219,8 +312,8 @@ def _has_stream_copy_conflict(ordered_ops) -> bool:
     return (has_copy_cut or has_audio_only_extract or has_remux) and len(ordered_ops) > 1
 
 
-def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
-    print_step(5, 5, "Go — review, then send it")
+def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
+    print_step(5, 5, "Do this?")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if _has_stream_copy_conflict(ordered_ops):
@@ -245,7 +338,11 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         argv = build_argv(job)
         jobs.append((input_path, media, job, argv))
 
-    command_lines = "\n".join(f"[ffx.command]{' '.join(argv)}[/ffx.command]" for _, _, _, argv in jobs)
+    command_lines = "\n".join(
+        f"[ffx.command]{' '.join(argv)}[/ffx.command]"
+        + ("  [ffx.muted](runs as a 2-pass encode)[/ffx.muted]" if needs_two_pass(job) else "")
+        for _, _, job, argv in jobs
+    )
     console.print()
     console.print(
         Panel(
@@ -257,21 +354,43 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         )
     )
 
-    if not prompts.ask_confirm(
+    run_choice = prompts.run_wizard(
+        prompts.ask_confirm,
         "Run it?" if len(jobs) == 1 else f"Run all {len(jobs)}?",
         default=True,
-        hint="Last chance to back out.",
-    ):
+        hint="No declines outright.",
+    )
+    if run_choice is None:
+        return "back"
+    if not run_choice:
         console.print("Fair enough, holding off.", style="ffx.muted")
-        return
+        return "done"
 
     for input_path, media, job, argv in jobs:
         console.print(f"\n[bold]▸ Cooking[/bold] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
         try:
-            run_ffmpeg(argv, total_duration=media.duration, console=console)
+            if needs_two_pass(job):
+                with tempfile.TemporaryDirectory(prefix="ffx-2pass-") as tmpdir:
+                    passlog_base = os.path.join(tmpdir, "pass")
+                    pass1_argv, pass2_argv = build_two_pass_argvs(job, passlog_base)
+                    run_ffmpeg(
+                        pass1_argv,
+                        total_duration=media.duration,
+                        console=console,
+                        description="Pass 1/2 — analyzing",
+                        cleanup_on_cancel=False,
+                    )
+                    run_ffmpeg(
+                        pass2_argv,
+                        total_duration=media.duration,
+                        console=console,
+                        description="Pass 2/2 — encoding",
+                    )
+            else:
+                run_ffmpeg(argv, total_duration=media.duration, console=console)
         except FFmpegCancelled:
             console.print("Alright, backing off — cleaned up after myself.", style="ffx.warn")
-            return
+            return "done"
         except FFmpegRunError as exc:
             console.print(f"Well, that didn't work. ffmpeg says (exit {exc.returncode}):", style="ffx.error")
             console.print(exc.stderr_tail, style="ffx.muted")
@@ -280,7 +399,8 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         _print_size_change(input_path, job.output.path)
 
     if prompts.ask_confirm("Worth saving as a recipe for next time?", default=False):
-        _save_recipe(ordered_ops)
+        _save_recipe(ordered_ops, jobs[0][2].operations)
+    return "done"
 
 
 _BAR_WIDTH = 24
@@ -318,9 +438,13 @@ def _print_size_change(input_path: Path, output_path: Path) -> None:
     console.print(f"  After   [{style}]{after_bar}[/{style}]  {after_size}   [{style}]{change}[/{style}]")
 
 
-def _save_recipe(ordered_ops) -> None:
+def _save_recipe(ordered_ops, operations) -> None:
     recipe_name = prompts.ask_text("Recipe name:")
-    recipe_description = prompts.ask_text("Short description:")
+    # Generated straight from what each op actually does (the same
+    # description shown in the Pipeline panel and command review), not a
+    # free-text description someone has to write - precise and consistent
+    # across recipes instead of a human paraphrase that drifts over time.
+    recipe_description = " → ".join(op.description for op in operations)
     recipe = Recipe(
         name=recipe_name,
         description=recipe_description,

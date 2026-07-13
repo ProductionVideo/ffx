@@ -110,7 +110,7 @@ def _build_speed(params: dict) -> OperationSettings:
     keep_audio = params.get("keep_audio", True)
     video_filter = [f"setpts={1 / factor}*PTS"]
     audio_filter = _atempo_chain(factor) if keep_audio else []
-    output_args = [] if keep_audio else ["-an"]
+    non_video_output_args = [] if keep_audio else ["-an"]
 
     return OperationSettings(
         name=name,
@@ -118,7 +118,7 @@ def _build_speed(params: dict) -> OperationSettings:
         description=f"{factor}x speed" + ("" if keep_audio else " (silent)"),
         video_filter=video_filter,
         audio_filter=audio_filter,
-        output_args=output_args,
+        non_video_output_args=non_video_output_args,
         serializable={},
     )
 

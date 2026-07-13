@@ -61,7 +61,7 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
     if mode == "faststart":
         return OperationSettings(
             name=name, display_name=display_name, description="Faststart for web playback",
-            output_args=["-movflags", "+faststart"], serializable={},
+            non_video_output_args=["-movflags", "+faststart"], serializable={},
         )
 
     if mode == "genpts":

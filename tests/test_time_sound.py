@@ -74,7 +74,7 @@ def test_sound_tracks_skips_video_map_when_no_video():
 
 def test_sound_bitdepth_maps_to_pcm_codec():
     op = sound_op.build({"mode": "bitdepth", "depth": "24"}, _media(), None)
-    assert op.output_args == ["-c:a", "pcm_s24le"]
+    assert op.non_video_output_args == ["-c:a", "pcm_s24le"]
 
 
 def test_sound_compress_and_limit_filters():
@@ -90,20 +90,29 @@ def test_crop_border_pads_symmetrically():
 
 
 def test_crop_detect_parses_last_cropdetect_line(monkeypatch):
-    import subprocess
-
-    class FakeResult:
-        stderr = "crop=1920:800:0:140\ncrop=1920:800:0:140\ncrop=1920:816:0:132\n"
-
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
+    stderr = "crop=1920:800:0:140\ncrop=1920:800:0:140\ncrop=1920:816:0:132\n"
+    monkeypatch.setattr(crop_op, "run_with_output", lambda *a, **k: stderr)
     assert crop_op._detect_crop(_media()) == (1920, 816, 0, 132)
 
 
 def test_crop_detect_returns_none_when_no_matches(monkeypatch):
-    import subprocess
-
-    class FakeResult:
-        stderr = "no crop lines here"
-
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
+    monkeypatch.setattr(crop_op, "run_with_output", lambda *a, **k: "no crop lines here")
     assert crop_op._detect_crop(_media()) is None
+
+
+def test_crop_detect_cancel_raises_plain_keyboard_interrupt(monkeypatch):
+    # Ctrl+C should mean "bail out of the whole app" everywhere in ffx,
+    # not a special-cased behavior just for this scan.
+    from ffx.runner import FFmpegCancelled
+
+    def raise_cancelled(*a, **k):
+        raise FFmpegCancelled("cancelled by user")
+
+    monkeypatch.setattr(crop_op, "run_with_output", raise_cancelled)
+    try:
+        crop_op._detect_crop(_media())
+        assert False, "expected KeyboardInterrupt"
+    except FFmpegCancelled:
+        assert False, "FFmpegCancelled should not escape _detect_crop"
+    except KeyboardInterrupt:
+        pass

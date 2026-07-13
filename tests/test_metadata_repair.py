@@ -22,11 +22,11 @@ def _media(*, video=True, audio=True, frame_rate="30/1", duration=10.0) -> Media
 def test_metadata_edit_sets_format_and_stream_tags():
     params = {"mode": "edit", "values": {"title": "My Title", "language": "eng"}}
     op = metadata_op.build(params, _media(), None)
-    assert "-metadata" in op.output_args
-    assert "title=My Title" in op.output_args
-    assert "-metadata:s:v:0" in op.output_args
-    assert "-metadata:s:a:0" in op.output_args
-    assert op.output_args.count("language=eng") == 2
+    assert "-metadata" in op.non_video_output_args
+    assert "title=My Title" in op.non_video_output_args
+    assert "-metadata:s:v:0" in op.non_video_output_args
+    assert "-metadata:s:a:0" in op.non_video_output_args
+    assert op.non_video_output_args.count("language=eng") == 2
 
 
 def test_metadata_edit_is_pure_and_can_build_twice():
@@ -36,17 +36,17 @@ def test_metadata_edit_is_pure_and_can_build_twice():
     params = {"mode": "edit", "values": {"title": "T", "language": "eng"}}
     first = metadata_op.build(params, _media(), None)
     second = metadata_op.build(params, _media(), None)
-    assert first.output_args == second.output_args
+    assert first.non_video_output_args == second.non_video_output_args
 
 
 def test_metadata_strip_uses_map_metadata():
     op = metadata_op.build({"mode": "strip"}, _media(), None)
-    assert op.output_args == ["-map_metadata", "-1"]
+    assert op.non_video_output_args == ["-map_metadata", "-1"]
 
 
 def test_repair_faststart():
     op = repair_op.build({"mode": "faststart"}, _media(), None)
-    assert op.output_args == ["-movflags", "+faststart"]
+    assert op.non_video_output_args == ["-movflags", "+faststart"]
 
 
 def test_repair_genpts_is_input_side():

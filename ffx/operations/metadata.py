@@ -42,28 +42,28 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
             name=name,
             display_name=display_name,
             description="Strip all metadata",
-            output_args=["-map_metadata", "-1"],
+            non_video_output_args=["-map_metadata", "-1"],
             serializable={},
         )
 
     values = params.get("values", {})
-    output_args = []
+    non_video_output_args = []
     language = values.get("language")
     for key, value in values.items():
         if key == "language":
             continue
-        output_args += ["-metadata", f"{key}={value}"]
+        non_video_output_args += ["-metadata", f"{key}={value}"]
     if language:
         if media.primary_video:
-            output_args += ["-metadata:s:v:0", f"language={language}"]
+            non_video_output_args += ["-metadata:s:v:0", f"language={language}"]
         if media.primary_audio:
-            output_args += ["-metadata:s:a:0", f"language={language}"]
+            non_video_output_args += ["-metadata:s:a:0", f"language={language}"]
 
     fields_set = list(values.keys()) + (["language"] if language else [])
     return OperationSettings(
         name=name,
         display_name=display_name,
         description=f"Set {', '.join(fields_set)}" if fields_set else "No metadata changes",
-        output_args=output_args,
+        non_video_output_args=non_video_output_args,
         serializable={},
     )

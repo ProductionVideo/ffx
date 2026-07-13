@@ -137,7 +137,7 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
     if mode == "mute":
         return OperationSettings(
             name=name, display_name=display_name, description="Mute (remove audio)",
-            output_args=["-an"], serializable={},
+            non_video_output_args=["-an"], serializable={},
         )
     if mode == "channels":
         return _build_channels(params)
@@ -148,13 +148,13 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
     if mode == "resample":
         return OperationSettings(
             name=name, display_name=display_name, description=f"Resample to {params['rate']}Hz",
-            output_args=["-ar", params["rate"]], serializable={},
+            non_video_output_args=["-ar", params["rate"]], serializable={},
         )
     if mode == "bitdepth":
         depth = params["depth"]
         return OperationSettings(
             name=name, display_name=display_name, description=f"{depth}-bit PCM",
-            output_args=["-c:a", _BIT_DEPTHS[depth]], serializable={},
+            non_video_output_args=["-c:a", _BIT_DEPTHS[depth]], serializable={},
         )
     if mode == "delay":
         return _build_delay(params)
@@ -173,7 +173,7 @@ def _build_extract(params: dict) -> OperationSettings:
         name=name,
         display_name=display_name,
         description=f"Extract audio to {codec.upper()}",
-        output_args=output_args,
+        non_video_output_args=output_args,
         serializable={},
     )
 
@@ -183,12 +183,12 @@ def _build_channels(params: dict) -> OperationSettings:
     if action == "downmix":
         return OperationSettings(
             name=name, display_name=display_name, description="Downmix to mono",
-            output_args=["-ac", "1"], serializable={},
+            non_video_output_args=["-ac", "1"], serializable={},
         )
     if action == "upmix":
         return OperationSettings(
             name=name, display_name=display_name, description="Upmix to stereo",
-            output_args=["-ac", "2"], serializable={},
+            non_video_output_args=["-ac", "2"], serializable={},
         )
     if action == "swap":
         return OperationSettings(

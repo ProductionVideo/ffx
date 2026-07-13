@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-import subprocess
 
 from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings, Preset
+from ffx.runner import FFmpegCancelled, run_with_output
 from ffx.ui import prompts
 from ffx.ui.theme import console
 
@@ -95,10 +95,15 @@ def _detect_crop(media: MediaInfo) -> tuple[int, int, int, int] | None:
         "-f", "null", "-",
     ]
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return None
-    matches = _CROPDETECT_RE.findall(result.stderr)
+        stderr = run_with_output(
+            args, total_duration=sample_duration, console=console, description="Detecting crop region"
+        )
+    except FFmpegCancelled:
+        # Keep Ctrl+C meaning "bail out of the whole app" everywhere else
+        # in ffx, rather than introducing a second, different cancel
+        # behavior just for this scan.
+        raise KeyboardInterrupt from None
+    matches = _CROPDETECT_RE.findall(stderr)
     if not matches:
         return None
     w, h, x, y = matches[-1]

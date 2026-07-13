@@ -3,6 +3,7 @@ from __future__ import annotations
 from ffx import presets as preset_calc
 from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings
 from ffx.ui import prompts
+from ffx.ui.theme import console
 
 name = "convert"
 display_name = "Convert"
@@ -164,7 +165,21 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         default=container_default,
     )
 
-    params: dict = {"container": container, "vcodec": vcodec}
+    acodec = prompts.choose(
+        "Audio codec:",
+        [
+            ("AAC", "aac"),
+            ("Opus", "opus"),
+            ("MP3", "mp3"),
+            ("AC-3", "ac3"),
+            ("FLAC", "flac"),
+            ("PCM / WAV", "pcm"),
+            ("Copy (no re-encode)", "copy"),
+        ],
+        default=_DEFAULT_AUDIO.get(vcodec, "copy"),
+    )
+
+    params: dict = {"container": container, "vcodec": vcodec, "acodec": acodec}
 
     if vcodec == "copy_v":
         pass
@@ -185,22 +200,14 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     else:
         engine = _choose_engine(vcodec, hardware)
         params["engine"] = engine
-        params.update(_choose_quality(vcodec, engine, media, hardware))
+        params.update(_choose_quality(vcodec, engine, media, hardware, acodec))
+        if engine == "software" and params.get("quality_mode") in ("bitrate", "target_size"):
+            params["two_pass"] = prompts.ask_confirm(
+                "Two-pass encode?",
+                default=params.get("quality_mode") == "target_size",
+                hint="Slower (encodes twice) but lands much closer to the target.",
+            )
 
-    acodec = prompts.choose(
-        "Audio codec:",
-        [
-            ("AAC", "aac"),
-            ("Opus", "opus"),
-            ("MP3", "mp3"),
-            ("AC-3", "ac3"),
-            ("FLAC", "flac"),
-            ("PCM / WAV", "pcm"),
-            ("Copy (no re-encode)", "copy"),
-        ],
-        default=_DEFAULT_AUDIO.get(vcodec, "aac"),
-    )
-    params["acodec"] = acodec
     return params
 
 
@@ -241,11 +248,11 @@ def _choose_engine(vcodec: str, hardware: HardwareCapabilities) -> str:
 
 
 def _choose_quality(
-    vcodec: str, engine: str, media: MediaInfo, hardware: HardwareCapabilities
+    vcodec: str, engine: str, media: MediaInfo, hardware: HardwareCapabilities, acodec: str
 ) -> dict:
-    """One menu: calculated compression tiers alongside a manual escape
-    hatch, defaulted to "Balanced" - compression is a single, clearly
-    labeled choice here, not a gate you have to get through first.
+    """One menu: calculated compression tiers, an exact target size, and a
+    manual escape hatch - compression is a single, clearly labeled choice
+    here, defaulted to "Balanced".
     """
     rows = [r for r in preset_calc.estimate_presets(vcodec, media, hardware) if r.engine == engine]
     # Index-based values/default rather than handing InquirerPy the
@@ -255,12 +262,39 @@ def _choose_quality(
         (f"{r.tier_name} — ~{preset_calc.humanize_size(r.estimated_size_mb)}, {r.speed_note}", i)
         for i, r in enumerate(rows)
     ]
+
+    if acodec == "copy":
+        # Passthrough audio keeps the source's own bitrate exactly - that's
+        # knowable from the probe, unlike FLAC (content-dependent) or PCM
+        # (depends on a sample rate/depth this menu never asks for).
+        audio = media.primary_audio
+        audio_kbps = (audio.bit_rate / 1000) if audio and audio.bit_rate else None
+    else:
+        audio_kbps = _AUDIO_CODECS[acodec]["bitrate_k"]
+    # No predictable bitrate to subtract - only offer a size target when
+    # there's a real number to work from.
+    if audio_kbps is not None:
+        options.append(("Target size... (enter an exact MB)", -2))
     options.append(("Manual", -1))
     default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
 
     chosen_index = prompts.choose(
         "Quality:", options, default=default_index, hint="Sizes are estimates, not guarantees."
     )
+
+    if chosen_index == -2:
+        target_mb = prompts.ask_float(
+            "Target size MB (1GB = 1000MB):", default=25.0, min_allowed=0.1, hint="ffx works out the bitrate needed to hit this."
+        )
+        result = preset_calc.target_size_video_kbps(target_mb, media.duration or 0.0, audio_kbps)
+        if not result.feasible:
+            console.print(
+                f"Heads up: {target_mb:g} MB over {media.duration:.0f}s is a very tight budget — "
+                "the output will likely come in larger than that.",
+                style="ffx.warn",
+            )
+        return {"quality_mode": "target_size", "video_kbps": result.video_kbps, "target_size_mb": target_mb}
+
     if chosen_index >= 0:
         chosen = rows[chosen_index]
         return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}
@@ -302,15 +336,23 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
 
     acodec = params.get("acodec", "aac")
     audio_info = _AUDIO_CODECS[acodec]
-    output_args += ["-c:a", audio_info["encoder"]]
+    non_video_output_args = ["-c:a", audio_info["encoder"]]
     if audio_info["bitrate_k"]:
-        output_args += ["-b:a", f"{audio_info['bitrate_k']}k"]
+        non_video_output_args += ["-b:a", f"{audio_info['bitrate_k']}k"]
+
+    description = f"Convert to {params.get('container', 'mp4').upper()}"
+    if params.get("quality_mode") == "target_size":
+        description += f", target ~{params.get('target_size_mb'):g} MB"
+    if params.get("two_pass"):
+        description += " (2-pass)"
 
     return OperationSettings(
         name=name,
         display_name=display_name,
-        description=f"Convert to {params.get('container', 'mp4').upper()}",
+        description=description,
         output_args=output_args,
+        non_video_output_args=non_video_output_args,
+        two_pass=bool(params.get("two_pass", False)),
         serializable={"container": params.get("container", "mp4")},
     )
 
