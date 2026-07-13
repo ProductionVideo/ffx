@@ -8,7 +8,33 @@ import subprocess
 import pytest
 
 from ffx import __main__ as ffx_main
+from ffx.models import OperationSettings
 from ffx.ui import prompts
+
+
+def _op(name, **kwargs):
+    return OperationSettings(name=name, display_name=name.title(), description="", **kwargs)
+
+
+def test_filter_drop_conflict_flags_vf_alongside_filter_complex():
+    ops = [
+        _op("composite", filter_complex="[0:v]overlay[out]"),
+        _op("scale", video_filter=["scale=160:-2"]),
+    ]
+    assert ffx_main._filter_drop_conflict(ops) == ("Composite", ["Scale"])
+
+
+def test_filter_drop_conflict_quiet_without_filter_complex():
+    ops = [_op("scale", video_filter=["scale=160:-2"]), _op("convert", output_args=["-c:v", "libx264"])]
+    assert ffx_main._filter_drop_conflict(ops) is None
+
+
+def test_filter_drop_conflict_quiet_when_others_have_no_filters():
+    ops = [
+        _op("composite", filter_complex="[0:v]overlay[out]"),
+        _op("convert", output_args=["-c:v", "libx264"]),
+    ]
+    assert ffx_main._filter_drop_conflict(ops) is None
 
 
 @pytest.fixture

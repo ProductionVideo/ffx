@@ -79,7 +79,7 @@ _CATEGORY_ICON = {
 
 
 def _select_inputs() -> list[Path]:
-    print_step(1, 5, "Pick your input")
+    print_step(1, 4, "Pick your input")
     path = prompts.ask_existing_path("Path to a media file or directory:")
     if path.is_dir():
         files = sorted(p for p in path.iterdir() if p.suffix.lower() in _MEDIA_EXTENSIONS)
@@ -113,7 +113,7 @@ def _add_field_row(table: Table, key: str, value: str) -> None:
 
 
 def _select_operations(media, caps, ordered_ops=None):
-    print_step(2, 5, "Build your pipeline")
+    print_step(2, 4, "Build your pipeline")
 
     ordered_ops = list(ordered_ops or [])
 
@@ -273,7 +273,7 @@ def _delete_recipes(saved_recipes: list[Recipe]) -> None:
 
 
 def _select_output(first_input: Path, ordered_ops):
-    print_step(4, 5, "Pick your output")
+    print_step(3, 4, "Pick your output")
     suffix = "-".join(module.name for module, _ in ordered_ops)
     default_dir = str(first_input.parent)
     out_dir = prompts.run_wizard(prompts.ask_output_path, "Output directory:", default=default_dir)
@@ -312,8 +312,24 @@ def _has_stream_copy_conflict(ordered_ops) -> bool:
     return (has_copy_cut or has_audio_only_extract or has_remux) and len(ordered_ops) > 1
 
 
+def _filter_drop_conflict(ops) -> tuple[str, list[str]] | None:
+    # build_argv uses one op's filter_complex verbatim and ignores every
+    # other op's simple -vf/-af fragments (ffmpeg can't mix them on the
+    # same stream) - so e.g. Composite queued alongside Scale silently
+    # drops the scale. Returns (filter-graph op name, dropped op names)
+    # when that's about to happen, so the user hears it from us instead
+    # of noticing the output is wrong.
+    fc_op = next((op for op in ops if op.filter_complex), None)
+    if fc_op is None:
+        return None
+    dropped = [
+        op.display_name for op in ops if not op.filter_complex and (op.video_filter or op.audio_filter)
+    ]
+    return (fc_op.display_name, dropped) if dropped else None
+
+
 def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
-    print_step(5, 5, "Do this?")
+    print_step(4, 4, "Do this?")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if _has_stream_copy_conflict(ordered_ops):
@@ -337,6 +353,16 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
         )
         argv = build_argv(job)
         jobs.append((input_path, media, job, argv))
+
+    conflict = _filter_drop_conflict(jobs[0][2].operations)
+    if conflict is not None:
+        fc_name, dropped = conflict
+        console.print(
+            f"Heads up: {fc_name} builds its own filter graph, so "
+            f"{', '.join(dropped)} won't be applied in the same run — "
+            "do that as a separate pass on the result instead.",
+            style="ffx.warn",
+        )
 
     command_lines = "\n".join(
         f"[ffx.command]{' '.join(argv)}[/ffx.command]"
