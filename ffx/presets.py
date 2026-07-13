@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from ffx.models import HardwareCapabilities, MediaInfo
 
@@ -10,11 +11,29 @@ from ffx.models import HardwareCapabilities, MediaInfo
 # the video-only target passed to the encoder.
 _AUDIO_BITRATE_KBPS = 128
 
-_QUALITY_TIERS: dict[str, int] = {
-    "Small (web share)": 2500,
-    "Balanced": 5000,
-    "High quality (archive)": 10000,
-    "Maximum (near-lossless)": 20000,
+# Every tier below "Original quality" is a fraction of the source's own
+# (codec-efficiency-adjusted) bitrate - never above it. Re-encoding a lossy
+# source can't recover detail that isn't there, so a tier that targeted
+# *more* bits than the source already has would just bloat the file for no
+# real quality gain. This keeps every option on one real sliding scale from
+# "as-is" down to "small", instead of a fixed absolute number that could
+# land above the source for an already-compressed file.
+_COMPRESSION_TIERS: list[tuple[str, float]] = [
+    ("Light", 0.80),
+    ("Balanced", 0.55),
+    ("High", 0.35),
+    ("Max", 0.20),
+]
+
+# Fallback absolute 1080p targets for the rare case ffprobe can't report any
+# source bitrate at all - there's nothing to scale a percentage against, so
+# these fall back to fixed numbers, ordered to match the tiers above (less
+# compression -> more bits).
+_FALLBACK_ABSOLUTE_KBPS: dict[str, int] = {
+    "Light": 8000,
+    "Balanced": 4000,
+    "High": 2000,
+    "Max": 1000,
 }
 
 # codec -> relative bits-per-pixel efficiency vs H.264 baseline (1.0).
@@ -65,6 +84,20 @@ class EncodePreset:
     target_video_kbps: int
     estimated_size_mb: float
     speed_note: str
+    # Fraction of the source's own bitrate this tier targets (None for
+    # "Original quality" and for the no-source-bitrate fallback tiers,
+    # neither of which are expressed as a fraction) - not shown in the UI,
+    # kept so the sliding-scale math (never above the source ceiling) is
+    # directly checkable/testable rather than only implicit in the numbers.
+    fraction: Optional[float] = None
+
+
+@dataclass
+class TargetSizeResult:
+    video_kbps: int
+    # False if the raw computed bitrate had to be floored - i.e. the
+    # requested size is tighter than this duration can realistically hit.
+    feasible: bool
 
 
 def estimate_presets(
@@ -76,32 +109,60 @@ def estimate_presets(
     this machine for `codec`, so the caller can show them side by side
     with an estimated size and let the user pick with real tradeoffs in
     view, rather than presets that silently swap in a different codec.
-    The first tier, when derivable, is "Original quality" - matching the
-    source's own bitrate (adjusted for codec efficiency, so re-encoding
-    into a more/less efficient codec doesn't just copy the number over).
+
+    Every tier is derived from the source's own bitrate (adjusted for
+    codec efficiency, so switching to a more/less efficient codec doesn't
+    just copy the number over) and capped at it - "Original quality" is
+    the ceiling, everything else is a fraction of that ceiling. Only when
+    the source's bitrate can't be determined at all does this fall back
+    to fixed absolute targets.
     """
     video = media.primary_video
     height = video.height if video and video.height else 1080
     duration = media.duration or 0.0
     efficiency = _CODEC_EFFICIENCY.get(codec, 1.0)
-    # Scale target bitrate down for source resolutions well below 1080p so
-    # small sources aren't inflated to a 1080p-sized bitrate budget.
-    scale_factor = min(1.0, height / 1080) if height else 1.0
 
     rows: list[EncodePreset] = []
-
     original_kbps = _source_video_kbps(media)
+
     if original_kbps:
         source_codec = _SOURCE_CODEC_NORMALIZE.get(video.codec_name, video.codec_name) if video else None
         source_efficiency = _CODEC_EFFICIENCY.get(source_codec, 1.0)
-        target_kbps = max(300, round(original_kbps * (efficiency / source_efficiency)))
-        rows += _rows_for_tier("Original quality", codec, target_kbps, duration, hardware, "matches source")
+        ceiling_kbps = original_kbps * (efficiency / source_efficiency)
 
-    for tier_name, kbps_1080p in _QUALITY_TIERS.items():
-        video_kbps = max(300, round(kbps_1080p * efficiency * scale_factor))
-        rows += _rows_for_tier(tier_name, codec, video_kbps, duration, hardware, None)
+        rows += _rows_for_tier(
+            "Original quality", codec, max(300, round(ceiling_kbps)), duration, hardware, "matches source", fraction=1.0
+        )
+        for tier_name, fraction in _COMPRESSION_TIERS:
+            video_kbps = max(300, round(ceiling_kbps * fraction))
+            rows += _rows_for_tier(tier_name, codec, video_kbps, duration, hardware, None, fraction=fraction)
+    else:
+        # Nothing to scale a percentage against - fall back to fixed
+        # targets, still scaled down for small source resolutions so a
+        # low-res source isn't inflated to a 1080p-sized bitrate budget.
+        scale_factor = min(1.0, height / 1080) if height else 1.0
+        for tier_name, kbps_1080p in _FALLBACK_ABSOLUTE_KBPS.items():
+            video_kbps = max(300, round(kbps_1080p * efficiency * scale_factor))
+            rows += _rows_for_tier(tier_name, codec, video_kbps, duration, hardware, None, fraction=None)
 
     return rows
+
+
+def target_size_video_kbps(target_mb: float, duration: float, audio_kbps: float) -> TargetSizeResult:
+    """Video bitrate needed to land the whole file at `target_mb`, given
+    the audio bitrate that will actually be used (not a guess - the caller
+    passes the real bitrate of whatever audio codec was already chosen).
+
+    Floored at 300kbps; when the raw computation lands below that, the
+    request genuinely can't be met at this duration, so `feasible=False`
+    tells the caller to warn rather than silently promise a size it can't
+    hit.
+    """
+    if duration <= 0:
+        return TargetSizeResult(video_kbps=300, feasible=False)
+    total_kbps = (target_mb * 1024 * 8) / duration
+    raw = round(total_kbps - audio_kbps)
+    return TargetSizeResult(video_kbps=max(300, raw), feasible=raw >= 300)
 
 
 def _rows_for_tier(
@@ -111,6 +172,7 @@ def _rows_for_tier(
     duration: float,
     hardware: HardwareCapabilities,
     note_override: str | None,
+    fraction: Optional[float],
 ) -> list[EncodePreset]:
     rows = [
         _make_row(
@@ -121,6 +183,7 @@ def _rows_for_tier(
             video_kbps,
             duration,
             note_override or "smaller, slower",
+            fraction,
         )
     ]
     hw_encoder = _HARDWARE_ENCODER.get(codec)
@@ -134,6 +197,7 @@ def _rows_for_tier(
                 video_kbps,
                 duration,
                 note_override or "faster (hardware)",
+                fraction,
             )
         )
     return rows
@@ -187,6 +251,7 @@ def _make_row(
     video_kbps: int,
     duration: float,
     speed_note: str,
+    fraction: Optional[float],
 ) -> EncodePreset:
     total_kbps = video_kbps + _AUDIO_BITRATE_KBPS
     estimated_size_mb = (total_kbps * duration) / 8 / 1024
@@ -198,4 +263,5 @@ def _make_row(
         target_video_kbps=video_kbps,
         estimated_size_mb=round(estimated_size_mb, 1),
         speed_note=speed_note,
+        fraction=fraction,
     )

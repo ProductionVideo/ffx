@@ -91,9 +91,13 @@ class HardwareCapabilities:
     videotoolbox_available: bool
     hw_encoders: set[str]
     hw_decoders: set[str]
+    filters: set[str] = field(default_factory=set)
 
     def has_encoder(self, codec: str) -> bool:
         return codec in self.hw_encoders
+
+    def has_filter(self, name: str) -> bool:
+        return name in self.filters
 
     def has_decoder(self, codec: str) -> bool:
         return codec in self.hw_decoders
@@ -124,7 +128,31 @@ class OperationSettings:
     video_filter: list[str] = field(default_factory=list)
     audio_filter: list[str] = field(default_factory=list)
     filter_complex: Optional[str] = None
+    # Extra `-i` inputs this operation needs beyond the job's own input
+    # file (a watermark image, a second video to stack/overlay/chroma-key
+    # against). Only meaningful alongside filter_complex, which references
+    # them via positional "{in0}", "{in1}", ... placeholders - build_argv
+    # resolves those to the real ffmpeg input index once every operation's
+    # inputs are known, so an operation never has to guess where in the
+    # final argv it'll land.
+    extra_inputs: list[Path] = field(default_factory=list)
+    # Per-extra-input flags that must precede that specific `-i` (e.g.
+    # `-loop 1` for a still-image overlay/background) - parallel to
+    # extra_inputs by index.
+    extra_input_args: list[list[str]] = field(default_factory=list)
     output_args: list[str] = field(default_factory=list)
+    # Audio/metadata/container-mux flags - anything that doesn't affect the
+    # video bitstream itself. Kept separate from output_args so a 2-pass
+    # encode's analysis pass (video only, discarded to /dev/null) can
+    # include everything that shapes the actual frames - codec, bitrate,
+    # trim points - while leaving out flags that would be meaningless or
+    # unsafe against a null muxer. build_argv() includes both for a normal
+    # single-pass job, so this split is invisible unless two_pass is set.
+    non_video_output_args: list[str] = field(default_factory=list)
+    # Set by Convert when the user opts into 2-pass for a bitrate/target-
+    # size encode. JobBuilder runs the job as a real analysis-then-encode
+    # pair instead of one invocation when any operation sets this.
+    two_pass: bool = False
     serializable: dict = field(default_factory=dict)
 
 

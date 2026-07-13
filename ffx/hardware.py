@@ -8,6 +8,14 @@ from ffx.models import HardwareCapabilities
 
 _HWACCEL_ENCODER_RE = re.compile(r"^\s*V[A-Z.]*\s+(\S+_videotoolbox)\s", re.MULTILINE)
 
+# `ffmpeg -filters` rows look like " T.. drawtext           V->V   Draw text ...":
+# a flags column (T/S/C or '.'), the filter name, then an I/O spec containing
+# "->". Some ffmpeg builds (notably Homebrew's default, non-"full" formula)
+# are compiled without libfreetype/fontconfig and simply don't have
+# `drawtext` at all - this is how operations that depend on an optional
+# filter (Text) find out before asking the user anything.
+_FILTER_RE = re.compile(r"^\s*\S{1,3}\s+(\S+)\s+\S*->\S*", re.MULTILINE)
+
 # Unlike encoding, ffmpeg has no separate "*_videotoolbox" decoder names -
 # VideoToolbox decode is applied generically via "-hwaccel videotoolbox" on
 # top of the standard decoder, so it can't be discovered from `-decoders`
@@ -34,15 +42,18 @@ def detect() -> HardwareCapabilities:
     """
     encoders_out = _run(["ffmpeg", "-hide_banner", "-encoders"])
     hwaccels_out = _run(["ffmpeg", "-hide_banner", "-hwaccels"])
+    filters_out = _run(["ffmpeg", "-hide_banner", "-filters"])
 
     hw_encoders = {m.group(1) for m in _HWACCEL_ENCODER_RE.finditer(encoders_out)}
     videotoolbox_available = "videotoolbox" in hwaccels_out
     hw_decoders = set(_KNOWN_VIDEOTOOLBOX_DECODE_CODECS) if videotoolbox_available else set()
+    filters = {m.group(1) for m in _FILTER_RE.finditer(filters_out)}
 
     return HardwareCapabilities(
         videotoolbox_available=videotoolbox_available,
         hw_encoders=hw_encoders,
         hw_decoders=hw_decoders,
+        filters=filters,
     )
 
 

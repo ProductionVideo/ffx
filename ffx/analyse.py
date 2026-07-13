@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from rich.console import Console
+
 from ffx import presets as preset_calc
 from ffx.models import MediaInfo, Preset
+from ffx.runner import FFmpegCancelled, run_with_output
 from ffx.ui import prompts
 
 name = "analyse"
@@ -93,28 +95,45 @@ def summary_rows(media: MediaInfo) -> list[tuple[str, str]]:
     return rows
 
 
-def run_qc(path: Path, checks: list[str]) -> QCFindings:
+def run_qc(path: Path, checks: list[str], duration: float = 0.0, console: Optional[Console] = None) -> QCFindings:
     findings = QCFindings()
     if "black" in checks:
-        stderr = _run_filter(path, vf="blackdetect=d=0.1:pix_th=0.10", drop_audio=True)
+        stderr = _run_filter(
+            path, duration, console, "Checking for black sections",
+            vf="blackdetect=d=0.1:pix_th=0.10", drop_audio=True,
+        )
         findings.black_sections = [
             (float(s), float(e), float(d)) for s, e, d in _BLACK_RE.findall(stderr)
         ]
     if "silence" in checks:
-        stderr = _run_filter(path, af="silencedetect=n=-30dB:d=0.5", drop_video=True)
+        stderr = _run_filter(
+            path, duration, console, "Checking for silent sections",
+            af="silencedetect=n=-30dB:d=0.5", drop_video=True,
+        )
         starts = [float(s) for s in _SILENCE_START_RE.findall(stderr)]
         ends = [(float(e), float(d)) for e, d in _SILENCE_END_RE.findall(stderr)]
         for i, start in enumerate(starts):
             end, dur = ends[i] if i < len(ends) else (None, None)
             findings.silence_sections.append((start, end, dur))
     if "freeze" in checks:
-        stderr = _run_filter(path, vf="freezedetect=n=-60dB:d=0.5", drop_audio=True)
+        stderr = _run_filter(
+            path, duration, console, "Checking for frozen sections",
+            vf="freezedetect=n=-60dB:d=0.5", drop_audio=True,
+        )
         findings.freeze_starts = [float(s) for s in _FREEZE_START_RE.findall(stderr)]
     return findings
 
 
 def _run_filter(
-    path: Path, *, vf: str = "", af: str = "", drop_audio: bool = False, drop_video: bool = False
+    path: Path,
+    duration: float,
+    console: Optional[Console],
+    description: str,
+    *,
+    vf: str = "",
+    af: str = "",
+    drop_audio: bool = False,
+    drop_video: bool = False,
 ) -> str:
     args = ["ffmpeg", "-i", str(path)]
     if vf:
@@ -126,5 +145,10 @@ def _run_filter(
     if drop_video:
         args += ["-vn"]
     args += ["-f", "null", "-"]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=300)
-    return result.stderr
+    try:
+        return run_with_output(args, total_duration=duration, console=console, description=description)
+    except FFmpegCancelled:
+        # Keep Ctrl+C meaning "bail out of the whole app" everywhere else
+        # in ffx, rather than introducing a second, different cancel
+        # behavior just for this scan.
+        raise KeyboardInterrupt from None
