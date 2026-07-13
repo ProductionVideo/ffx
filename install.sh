@@ -57,8 +57,20 @@ fi
 if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
     say "ffmpeg is already installed."
     if ! ffmpeg -hide_banner -filters 2>/dev/null | grep -q drawtext; then
-        warn "This ffmpeg build lacks the drawtext filter, so ffx's Text overlay"
-        warn "operation will be unavailable. 'brew install ffmpeg-full' includes it."
+        if command -v brew >/dev/null 2>&1 && brew list --formula 2>/dev/null | grep -qx ffmpeg-full; then
+            # Both formulas installed: they conflict, and the plain one is
+            # the one linked - the full build is sitting there unused.
+            warn "ffmpeg-full is installed but not linked (the plain ffmpeg formula is shadowing it)."
+            if confirm "Switch to ffmpeg-full now? (brew unlink ffmpeg && brew link ffmpeg-full)"; then
+                brew unlink ffmpeg && brew link ffmpeg-full
+                say "Switched - Text overlays and HAP encoding are now available."
+            else
+                warn "Skipped - run it yourself later: brew unlink ffmpeg && brew link ffmpeg-full"
+            fi
+        else
+            warn "This ffmpeg build lacks the drawtext filter, so ffx's Text overlay and"
+            warn "HAP encoding will be unavailable. 'brew install ffmpeg-full' includes both."
+        fi
     fi
 elif command -v brew >/dev/null 2>&1; then
     if confirm "ffmpeg isn't installed. Install it with Homebrew now?"; then
