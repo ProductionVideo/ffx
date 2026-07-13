@@ -39,13 +39,12 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
             -1,  # choose: Quality menu -> Manual
             "23",  # ask_text: manual CRF
             "aac",  # choose: audio codec
-            True,  # ask_confirm: add another operation?
-            "scale",  # choose: category
+            "scale",  # choose: category (pipeline menu loops back automatically)
             None,  # choose_preset: Custom...
             "width",  # choose: scale mode
             "160",  # ask_text: target width
             "bilinear",  # choose: algorithm
-            False,  # ask_confirm: add another operation?
+            "done",  # choose: category menu -> Done
             tmp_path,  # ask_output_path: output directory
             True,  # ask_confirm: run the command?
             False,  # ask_confirm: save as recipe?

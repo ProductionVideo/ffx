@@ -12,7 +12,7 @@ from ffx.ui import prompts
 
 name = "analyse"
 display_name = "Analyse"
-description = "Read-only QC report: format, streams, black/silent/frozen sections"
+description = "Inspect it — nothing changes"
 
 _BLACK_RE = re.compile(r"black_start:([\d.]+) black_end:([\d.]+) black_duration:([\d.]+)")
 _SILENCE_START_RE = re.compile(r"silence_start:\s*([\d.]+)")

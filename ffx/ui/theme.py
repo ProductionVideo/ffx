@@ -39,7 +39,7 @@ INQUIRER_STYLE = get_style(
 def print_banner() -> None:
     console.print()
     console.print(" ffx ", style="reverse bold cyan", justify="left")
-    console.print("beautiful ffmpeg, without the syntax", style="ffx.muted")
+    console.print("beautiful ffmpeg, without the syntax — let's go", style="ffx.muted")
     console.print()
 
 

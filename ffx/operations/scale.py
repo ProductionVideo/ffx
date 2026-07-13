@@ -5,7 +5,7 @@ from ffx.ui import prompts
 
 name = "scale"
 display_name = "Scale"
-description = "Resize video, preserving or filling a target frame"
+description = "Resize to fit, fill, or an exact size"
 
 _ALGO_LABELS = {
     "bilinear": "Fast (bilinear)",
@@ -55,13 +55,14 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     mode = prompts.choose(
         "How do you want to scale?",
         [
-            ("By width (keep aspect ratio)", "width"),
-            ("By height (keep aspect ratio)", "height"),
-            ("Fit inside a canvas (letterbox)", "fit"),
-            ("Fill a canvas (crop excess)", "fill"),
-            ("Stretch to an exact size (ignore aspect ratio)", "stretch"),
-            ("Percentage of source size", "percent"),
+            ("By width", "width"),
+            ("By height", "height"),
+            ("Fit (letterbox)", "fit"),
+            ("Fill (crop excess)", "fill"),
+            ("Stretch (ignores aspect ratio)", "stretch"),
+            ("By percentage", "percent"),
         ],
+        hint="Width/height/fit/fill keep aspect ratio; stretch doesn't.",
     )
 
     params: dict = {"mode": mode}

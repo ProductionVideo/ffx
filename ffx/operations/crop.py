@@ -5,7 +5,7 @@ from ffx.ui import prompts
 
 name = "crop"
 display_name = "Crop"
-description = "Crop to a target aspect ratio, or an exact rectangle"
+description = "Reframe to a ratio or exact rectangle"
 
 PRESETS = [
     Preset(
@@ -39,8 +39,8 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     mode = prompts.choose(
         "How do you want to crop?",
         [
-            ("Crop to an aspect ratio (centered)", "aspect"),
-            ("Exact rectangle (width, height, x, y)", "rect"),
+            ("By aspect ratio (centered)", "aspect"),
+            ("Exact rectangle", "rect"),
         ],
     )
     if mode == "aspect":

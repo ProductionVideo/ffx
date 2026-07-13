@@ -120,7 +120,7 @@ def _rows_for_tier(
             _SOFTWARE_ENCODER[codec],
             video_kbps,
             duration,
-            note_override or "slower, best compression",
+            note_override or "smaller, slower",
         )
     ]
     hw_encoder = _HARDWARE_ENCODER.get(codec)
@@ -133,7 +133,7 @@ def _rows_for_tier(
                 hw_encoder,
                 video_kbps,
                 duration,
-                note_override or "fast, uses Apple Silicon media engine",
+                note_override or "faster (hardware)",
             )
         )
     return rows

@@ -5,21 +5,21 @@ from ffx.ui import prompts
 
 name = "cut"
 display_name = "Cut"
-description = "Trim, extract a duration, or cut between two timestamps"
+description = "Trim, slice, or extract a clip"
 
 _MODE_LABELS = {
-    "from_start": "Trim from a start time to the end",
-    "duration": "Extract a duration starting at a point",
+    "from_start": "Trim from a point to the end",
+    "duration": "Extract a fixed duration",
     "between": "Cut between two timestamps",
 }
 
 
 def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
-    mode = prompts.choose(
-        "What kind of cut?", [(label, key) for key, label in _MODE_LABELS.items()]
-    )
+    mode = prompts.choose("What kind of cut?", [(label, key) for key, label in _MODE_LABELS.items()])
     reencode = not prompts.ask_confirm(
-        "Fast cut without re-encoding? (snaps to nearest keyframe)", default=False
+        "Fast cut?",
+        default=False,
+        hint="Fast snaps to the nearest keyframe (instant, no re-encode). No = frame-accurate.",
     )
     params = {"mode": mode, "reencode": reencode}
 

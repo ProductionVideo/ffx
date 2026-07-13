@@ -6,7 +6,7 @@ from ffx.ui import prompts
 
 name = "convert"
 display_name = "Convert"
-description = "Change container, video codec, and audio codec independently"
+description = "Swap codec, container, or both"
 
 # "Standard" codecs share one quality mechanism: an engine choice (software
 # vs VideoToolbox hardware, where available) and either a calculated
@@ -83,11 +83,11 @@ _PRORES_PROFILES = [("Proxy", "0"), ("LT", "1"), ("Standard 422", "2"), ("422 HQ
 _PRORES_KBPS_1080P30 = {"0": 45_000, "1": 102_000, "2": 147_000, "3": 220_000}
 
 _DNXHR_PROFILES = [
-    ("LQ (low quality, offline)", "dnxhr_lq"),
-    ("SQ (standard quality)", "dnxhr_sq"),
-    ("HQ (high quality)", "dnxhr_hq"),
-    ("HQX (10-bit high quality)", "dnxhr_hqx"),
-    ("444 (10-bit, no chroma subsampling)", "dnxhr_444"),
+    ("LQ — offline edit", "dnxhr_lq"),
+    ("SQ — standard", "dnxhr_sq"),
+    ("HQ — high quality", "dnxhr_hq"),
+    ("HQX — 10-bit", "dnxhr_hqx"),
+    ("444 — full chroma, 10-bit", "dnxhr_444"),
 ]
 _DNXHR_PIXFMT = {
     "dnxhr_lq": "yuv422p",
@@ -139,7 +139,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             ("AV1", "av1"),
             ("VP9", "vp9"),
             ("ProRes", "prores"),
-            ("DNxHR (DNxHD's resolution-independent successor)", "dnxhr"),
+            ("DNxHR (Avid)", "dnxhr"),
             ("MPEG-2", "mpeg2"),
             ("Copy (no re-encode)", "copy_v"),
         ],
@@ -173,7 +173,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             "ProRes profile:", _profile_choices(_PRORES_PROFILES, _PRORES_KBPS_1080P30, media), default="3"
         )
         use_hw = hardware.has_encoder("prores_videotoolbox") and prompts.ask_confirm(
-            "Use VideoToolbox hardware ProRes encoder?", default=True
+            "Use hardware encoding?", default=True, hint="VideoToolbox — fast, uses the media engine."
         )
         params["engine"] = "hardware" if use_hw else "software"
     elif vcodec == "dnxhr":
@@ -228,14 +228,16 @@ def _profile_choices(
 
 def _choose_engine(vcodec: str, hardware: HardwareCapabilities) -> str:
     codec_info = _VIDEO_CODECS[vcodec]
-    options = [("Software (best quality/compression, slower)", "software")]
+    options = [("Software — best quality, slower", "software")]
     default = "software"
     if codec_info["hw"] and hardware.has_encoder(codec_info["hw"]):
-        options.insert(0, ("Hardware / VideoToolbox (fast, uses media engine)", "hardware"))
+        options.insert(0, ("Hardware — fast (Apple Silicon)", "hardware"))
         default = "hardware"
     if len(options) == 1:
         return options[0][1]
-    return prompts.choose("Encoder:", options, default=default)
+    return prompts.choose(
+        "Encoder:", options, default=default, hint="Software usually compresses better; hardware is faster."
+    )
 
 
 def _choose_quality(
@@ -253,10 +255,12 @@ def _choose_quality(
         (f"{r.tier_name} — ~{preset_calc.humanize_size(r.estimated_size_mb)}, {r.speed_note}", i)
         for i, r in enumerate(rows)
     ]
-    options.append(("Manual (enter quality yourself)", -1))
+    options.append(("Manual", -1))
     default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
 
-    chosen_index = prompts.choose("Quality:", options, default=default_index)
+    chosen_index = prompts.choose(
+        "Quality:", options, default=default_index, hint="Sizes are estimates, not guarantees."
+    )
     if chosen_index >= 0:
         chosen = rows[chosen_index]
         return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}

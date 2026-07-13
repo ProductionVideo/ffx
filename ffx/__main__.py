@@ -33,19 +33,22 @@ def main() -> None:
 
         ordered_ops = _select_operations(representative, caps)
         if ordered_ops is None:
-            console.print("No operations selected, nothing to do.", style="ffx.muted")
+            console.print("Nothing queued, nothing to do. Come back when you're ready.", style="ffx.muted")
             return
 
         output_dir, suffix = _select_output(inputs[0], ordered_ops)
 
         _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps)
     except KeyboardInterrupt:
-        console.print("\nCancelled.", style="ffx.muted")
+        console.print("\nAlright, bailing.", style="ffx.muted")
         sys.exit(130)
 
 
+_CATEGORY_ICON = {"convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣"}
+
+
 def _select_inputs() -> list[Path]:
-    print_step(1, 5, "Where — pick a file or a directory of files")
+    print_step(1, 5, "Where — pick your input")
     path = prompts.ask_existing_path("Path to a media file or directory:")
     if path.is_dir():
         files = sorted(p for p in path.iterdir() if p.suffix.lower() in _MEDIA_EXTENSIONS)
@@ -74,20 +77,26 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
 
 
 def _select_operations(media, caps):
-    print_step(2, 5, "What — build up one or more operations")
+    print_step(2, 5, "What — build your pipeline")
 
     ordered_ops: list[tuple[object, dict]] = []
     saved_recipes = recipes.list_recipes()
 
     while True:
-        menu = [(f"{m.display_name} — {m.description}", m.name) for m in CATEGORIES]
-        menu.append(("Analyse (read-only report, doesn't change the file)", "analyse"))
-        if saved_recipes:
-            menu.append(("Use a saved recipe...", "recipes"))
         if ordered_ops:
-            menu.append(("Done — continue to output & run", "done"))
+            _print_pipeline(ordered_ops, media, caps)
 
-        choice = prompts.choose("What do you want to do?" , menu)
+        menu = [
+            (f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}", m.name)
+            for m in CATEGORIES
+        ]
+        menu.append(("◎ Analyse — inspect it, nothing changes", "analyse"))
+        if saved_recipes:
+            menu.append(("★ Recipes — reuse a saved pipeline", "recipes"))
+        if ordered_ops:
+            menu.append(("✓ Done — send it", "done"))
+
+        choice = prompts.choose("What next?", menu)
 
         if choice == "done":
             break
@@ -101,12 +110,17 @@ def _select_operations(media, caps):
         module = get_operation(choice)
         params = module.prompt(media, caps)
         ordered_ops.append((module, params))
-        console.print(f"Added: {module.display_name}", style="ffx.ok")
-
-        if not prompts.ask_confirm("Add another operation?", default=False):
-            break
 
     return ordered_ops or None
+
+
+def _print_pipeline(ordered_ops, media, caps) -> None:
+    lines = []
+    for i, (module, params) in enumerate(ordered_ops, 1):
+        op = module.build(params, media, caps)
+        icon = _CATEGORY_ICON.get(module.name, "▸")
+        lines.append(f"[ffx.ok]{i}.[/ffx.ok] {icon} [bold]{module.display_name}[/bold]  {op.description}")
+    console.print(Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.ok"))
 
 
 def _run_analyse(media) -> None:
@@ -142,19 +156,19 @@ def _print_findings(title: str, sections: list, fmt: str) -> None:
 
 def _pick_recipe(saved_recipes: list[Recipe]) -> list[tuple[object, dict]]:
     recipe = prompts.choose(
-        "Choose a recipe:",
-        [(f"{r.name} — {r.description}", r) for r in saved_recipes],
+        "Which recipe?",
+        [(f"★ {r.name} — {r.description}", r) for r in saved_recipes],
     )
     ordered_ops = []
     for entry in recipe.operations:
         module = get_operation(entry["name"])
         ordered_ops.append((module, entry["params"]))
-    console.print(f"Loaded recipe: {recipe.name} ({len(ordered_ops)} operation(s))", style="ffx.ok")
+    console.print(f"Loaded {recipe.name} ({len(ordered_ops)} step(s))", style="ffx.ok")
     return ordered_ops
 
 
 def _select_output(first_input: Path, ordered_ops) -> tuple[Path, str]:
-    print_step(4, 5, "Where — choose where output goes")
+    print_step(4, 5, "Where — pick your output")
     suffix = "-".join(module.name for module, _ in ordered_ops)
     default_dir = str(first_input.parent)
     out_dir = prompts.ask_output_path("Output directory:", default=default_dir)
@@ -179,7 +193,7 @@ def _has_stream_copy_conflict(ordered_ops) -> bool:
 
 
 def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
-    print_step(5, 5, "Go — review and run")
+    print_step(5, 5, "Go — review, then send it")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if _has_stream_copy_conflict(ordered_ops):
@@ -215,24 +229,28 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         )
     )
 
-    if not prompts.ask_confirm(f"Run {'this command' if len(jobs) == 1 else f'these {len(jobs)} commands'}?", default=True):
-        console.print("Cancelled.", style="ffx.muted")
+    if not prompts.ask_confirm(
+        "Run it?" if len(jobs) == 1 else f"Run all {len(jobs)}?",
+        default=True,
+        hint="Last chance to back out.",
+    ):
+        console.print("Fair enough, holding off.", style="ffx.muted")
         return
 
     for input_path, media, job, argv in jobs:
-        console.print(f"\n[ffx.step]Processing[/ffx.step] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
+        console.print(f"\n[ffx.step]Cooking[/ffx.step] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
         try:
             run_ffmpeg(argv, total_duration=media.duration, console=console)
         except FFmpegCancelled:
-            console.print("Cancelled - partial output removed.", style="ffx.warn")
+            console.print("Alright, backing off — cleaned up after myself.", style="ffx.warn")
             return
         except FFmpegRunError as exc:
-            console.print(f"ffmpeg failed (exit {exc.returncode}):", style="ffx.error")
+            console.print(f"Well, that didn't work. ffmpeg says (exit {exc.returncode}):", style="ffx.error")
             console.print(exc.stderr_tail, style="ffx.muted")
             sys.exit(exc.returncode)
-        console.print(f"Wrote {job.output.path}", style="ffx.ok")
+        console.print(f"Done. {job.output.path} is ready to go.", style="ffx.ok")
 
-    if prompts.ask_confirm("Save this as a recipe for next time?", default=False):
+    if prompts.ask_confirm("Worth saving as a recipe for next time?", default=False):
         _save_recipe(ordered_ops)
 
 
@@ -245,7 +263,7 @@ def _save_recipe(ordered_ops) -> None:
         operations=[{"name": module.name, "params": params} for module, params in ordered_ops],
     )
     path = recipes.save(recipe)
-    console.print(f"Saved recipe to {path}", style="ffx.ok")
+    console.print(f"Saved. That's one click next time: {path}", style="ffx.ok")
 
 
 if __name__ == "__main__":

@@ -69,17 +69,28 @@ def choose_preset(presets: list[Preset], *, message: str = "Choose a preset:") -
     return presets[index] if index >= 0 else None
 
 
-def choose(message: str, choices: list[tuple[str, Any]], *, default: Any = None) -> Any:
+def choose(
+    message: str,
+    choices: list[tuple[str, Any]],
+    *,
+    default: Any = None,
+    hint: str = "",
+) -> Any:
     """Generic menu: choices is a list of (label, value) pairs.
 
     `default` pre-highlights the matching choice so the common/fast path
     is just pressing Enter, while every option is still one arrow-key
     away - speed and full manual control aren't in tension.
+
+    `hint` renders as a dim subtitle under the question (InquirerPy's
+    long_instruction) - context that would otherwise have to get crammed
+    into every choice label goes here once instead.
     """
     return inquirer.select(
         message=message,
         choices=[Choice(value=value, name=label) for label, value in choices],
         default=default,
+        long_instruction=hint,
         style=INQUIRER_STYLE,
         qmark="?",
     ).execute()
@@ -99,10 +110,11 @@ def ask_timestamp(message: str, *, default: str = "0") -> str:
     return ask_text(message, default=default, validator=TimestampValidator())
 
 
-def ask_confirm(message: str, *, default: bool = True) -> bool:
+def ask_confirm(message: str, *, default: bool = True, hint: str = "") -> bool:
     return inquirer.confirm(
         message=message,
         default=default,
+        long_instruction=hint,
         style=INQUIRER_STYLE,
         qmark="?",
     ).execute()
