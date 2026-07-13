@@ -2,6 +2,9 @@
 
 **ffmpeg, for the simple.**
 
+<img src="docs/screenshot.svg" alt="ffx: media info and pipeline panes with the operation menu open" width="100%">
+
+
 ffx is an interactive frontend for ffmpeg. Instead of assembling flags from Stack Overflow, you answer a few questions — pick a file, build a pipeline of operations, confirm — and ffx builds and runs the ffmpeg command for you, with a live progress bar. It always shows you the exact command before running it, so it doubles as a way to *learn* ffmpeg rather than hide it.
 
 ## What it can do
