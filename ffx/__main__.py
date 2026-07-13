@@ -70,9 +70,9 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
     rather than after building a whole command around it.
     """
     title = representative.path.name if len(inputs) == 1 else f"{representative.path.name} (+ {len(inputs) - 1} more)"
-    table = Table(title=title, show_header=False, box=box.ROUNDED, border_style="ffx.muted")
+    table = Table(title=title, show_header=False, box=box.SIMPLE, border_style="ffx.muted")
     table.add_column("Property", style="ffx.muted")
-    table.add_column("Value", style="ffx.accent")
+    table.add_column("Value", style="bold")
     for key, value in summary_rows(representative):
         if key == "File":
             continue
@@ -125,15 +125,15 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
         icon = _CATEGORY_ICON.get(module.name, "▸")
         lines.append(f"[ffx.ok]{i}.[/ffx.ok] {icon} [bold]{module.display_name}[/bold]  {op.description}")
     console.print(
-        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.accent", box=box.ROUNDED)
+        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.muted", box=box.ROUNDED)
     )
 
 
 def _run_analyse(media) -> None:
     params = analyse_prompt()
-    table = Table(title=f"Analysis: {media.path.name}", box=box.ROUNDED, border_style="ffx.muted")
+    table = Table(title=f"Analysis: {media.path.name}", box=box.SIMPLE, border_style="ffx.muted")
     table.add_column("Property", style="ffx.muted")
-    table.add_column("Value", style="ffx.accent")
+    table.add_column("Value", style="bold")
     for key, value in summary_rows(media):
         table.add_row(key, value)
     console.print(table)
@@ -245,7 +245,7 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
             title=f"Command{'s' if len(jobs) > 1 else ''} to run",
             title_align="left",
             border_style="ffx.ok",
-            box=box.ROUNDED,
+            box=box.HEAVY,
         )
     )
 
@@ -258,7 +258,7 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
         return
 
     for input_path, media, job, argv in jobs:
-        console.print(f"\n[ffx.step]Cooking[/ffx.step] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
+        console.print(f"\n[bold]▸ Cooking[/bold] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
         try:
             run_ffmpeg(argv, total_duration=media.duration, console=console)
         except FFmpegCancelled:
@@ -269,32 +269,45 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
             console.print(exc.stderr_tail, style="ffx.muted")
             sys.exit(exc.returncode)
         console.print(f"Done. {job.output.path} is ready to go.", style="ffx.ok")
-        size_change = _describe_size_change(input_path, job.output.path)
-        if size_change:
-            console.print(f"  {size_change}", style="ffx.muted")
+        _print_size_change(input_path, job.output.path)
 
     if prompts.ask_confirm("Worth saving as a recipe for next time?", default=False):
         _save_recipe(ordered_ops)
 
 
-def _describe_size_change(input_path: Path, output_path: Path) -> str:
+_BAR_WIDTH = 24
+
+
+def _bar(value: float, largest: float) -> str:
+    filled = max(1, round((value / largest) * _BAR_WIDTH)) if value > 0 else 0
+    return "█" * filled + "░" * (_BAR_WIDTH - filled)
+
+
+def _print_size_change(input_path: Path, output_path: Path) -> None:
     try:
         before = input_path.stat().st_size
         after = output_path.stat().st_size
     except OSError:
-        return ""
+        return
     if before <= 0:
-        return ""
-    before_mb = before / 1024 / 1024
-    after_mb = after / 1024 / 1024
+        return
+
     pct = (1 - after / before) * 100
     if pct >= 0.5:
-        change = f"{pct:.0f}% smaller"
+        change, style = f"{pct:.0f}% smaller", "ffx.ok"
     elif pct <= -0.5:
-        change = f"{-pct:.0f}% larger"
+        change, style = f"{-pct:.0f}% larger", "ffx.warn"
     else:
-        change = "about the same size"
-    return f"{preset_calc.humanize_size(before_mb)} → {preset_calc.humanize_size(after_mb)}  ({change})"
+        change, style = "about the same size", "ffx.muted"
+
+    largest = max(before, after, 1)
+    before_bar = _bar(before, largest)
+    after_bar = _bar(after, largest)
+    before_size = preset_calc.humanize_size(before / 1024 / 1024)
+    after_size = preset_calc.humanize_size(after / 1024 / 1024)
+
+    console.print(f"  Before  [ffx.muted]{before_bar}[/ffx.muted]  {before_size}")
+    console.print(f"  After   [{style}]{after_bar}[/{style}]  {after_size}   [{style}]{change}[/{style}]")
 
 
 def _save_recipe(ordered_ops) -> None:
