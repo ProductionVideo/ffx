@@ -14,6 +14,25 @@ from ffx.ui.theme import INQUIRER_STYLE
 _TIMESTAMP_RE = re.compile(r"^(\d+(\.\d+)?|(\d{1,2}:)?\d{1,2}:\d{2}(\.\d+)?)$")
 
 
+class _NumberValidator(Validator):
+    def __init__(self, *, kind: type, min_allowed: Optional[float] = None, max_allowed: Optional[float] = None):
+        self._kind = kind
+        self._min = min_allowed
+        self._max = max_allowed
+
+    def validate(self, document) -> None:
+        text = document.text.strip()
+        try:
+            value = self._kind(text)
+        except ValueError:
+            noun = "a whole number" if self._kind is int else "a number"
+            raise ValidationError(message=f"Enter {noun}", cursor_position=len(document.text)) from None
+        if self._min is not None and value < self._min:
+            raise ValidationError(message=f"Must be at least {self._min}", cursor_position=len(document.text))
+        if self._max is not None and value > self._max:
+            raise ValidationError(message=f"Must be at most {self._max}", cursor_position=len(document.text))
+
+
 def clean_path_input(text: str) -> str:
     """Undo the quoting/escaping macOS adds when you paste a path.
 
@@ -42,6 +61,17 @@ class ExistingPathValidator(Validator):
         if not Path(clean_path_input(document.text)).expanduser().exists():
             raise ValidationError(
                 message="That path doesn't exist",
+                cursor_position=len(document.text),
+            )
+
+
+class RatioValidator(Validator):
+    _RATIO_RE = re.compile(r"^\d+:\d+$")
+
+    def validate(self, document) -> None:
+        if not self._RATIO_RE.match(document.text.strip()):
+            raise ValidationError(
+                message="Enter a ratio like 16:9",
                 cursor_position=len(document.text),
             )
 
@@ -96,11 +126,12 @@ def choose(
     ).execute()
 
 
-def ask_text(message: str, *, default: str = "", validator: Optional[Validator] = None) -> str:
+def ask_text(message: str, *, default: str = "", validator: Optional[Validator] = None, hint: str = "") -> str:
     return inquirer.text(
         message=message,
         default=default,
         validate=validator,
+        long_instruction=hint,
         style=INQUIRER_STYLE,
         qmark="?",
     ).execute()
@@ -108,6 +139,132 @@ def ask_text(message: str, *, default: str = "", validator: Optional[Validator] 
 
 def ask_timestamp(message: str, *, default: str = "0") -> str:
     return ask_text(message, default=default, validator=TimestampValidator())
+
+
+def ask_int(
+    message: str,
+    *,
+    default: int,
+    min_allowed: Optional[int] = None,
+    max_allowed: Optional[int] = None,
+    hint: str = "",
+) -> int:
+    """Plain text entry validated as an integer inline, instead of letting
+    a bad `int(ask_text(...))` crash the whole run with a traceback.
+
+    (InquirerPy's dedicated `number` prompt was tried and rejected here -
+    it edits a fixed-point buffer digit-by-digit rather than accepting
+    normal typed input, so typing "45" over a default of "20" produces
+    "2045", not "45".)
+    """
+    value = ask_text(
+        message,
+        default=str(default),
+        validator=_NumberValidator(kind=int, min_allowed=min_allowed, max_allowed=max_allowed),
+        hint=hint,
+    )
+    return int(value)
+
+
+def ask_float(
+    message: str,
+    *,
+    default: float,
+    min_allowed: Optional[float] = None,
+    max_allowed: Optional[float] = None,
+    hint: str = "",
+) -> float:
+    value = ask_text(
+        message,
+        default=str(default),
+        validator=_NumberValidator(kind=float, min_allowed=min_allowed, max_allowed=max_allowed),
+        hint=hint,
+    )
+    return float(value)
+
+
+def fuzzy(
+    message: str,
+    choices: list[tuple[str, Any]],
+    *,
+    default: Any = None,
+    hint: str = "",
+) -> Any:
+    """Type-ahead filterable menu for longer choice lists - same
+    (label, value) tuple API as choose(), but you can type to narrow
+    instead of arrow-keying through everything.
+
+    Unlike inquirer.select, inquirer.fuzzy's own `default` pre-fills the
+    *search text* rather than pre-selecting a matching choice - fine when
+    a value happens to be a substring of its own label (e.g. "h264" ~
+    "H.264"), but silently wrong the moment it isn't (an index, a key
+    like "dnxhr_hq" with no textual overlap). So instead: reorder the
+    default to the front of the list and never touch fuzzy's own
+    default/search text - the cursor starting position does the same job
+    without depending on fuzzy text-matching an arbitrary internal value.
+    """
+    ordered = choices
+    if default is not None:
+        match = next((c for c in choices if c[1] == default), None)
+        if match is not None:
+            ordered = [match] + [c for c in choices if c is not match]
+    return inquirer.fuzzy(
+        message=message,
+        choices=[Choice(value=value, name=label) for label, value in ordered],
+        long_instruction=hint,
+        style=INQUIRER_STYLE,
+        qmark="?",
+    ).execute()
+
+
+def fuzzy_grouped(
+    message: str,
+    groups: list[tuple[str, list[tuple[str, Any]]]],
+    *,
+    hint: str = "",
+) -> Any:
+    """Type-ahead filterable menu with a bracketed group tag on each
+    label - groups is [(section_label, [(choice_label, value), ...])].
+
+    InquirerPy's fuzzy prompt explicitly rejects Separator (raises
+    InvalidArgument), so true section dividers aren't an option here;
+    the group tag is the closest equivalent that still fuzzy-matches
+    (typing "audio" surfaces everything tagged [Audio]).
+    """
+    items: list[Any] = []
+    for section_label, section_choices in groups:
+        items.extend(
+            Choice(value=value, name=f"[{section_label}] {label}") for label, value in section_choices
+        )
+    return inquirer.fuzzy(
+        message=message,
+        choices=items,
+        long_instruction=hint,
+        style=INQUIRER_STYLE,
+        qmark="?",
+    ).execute()
+
+
+def multi_choose(
+    message: str,
+    choices: list[tuple[str, Any]],
+    *,
+    defaults: Optional[list[Any]] = None,
+    hint: str = "",
+) -> list[Any]:
+    """Checkbox multi-select: space toggles, enter confirms - for picking
+    several independent options in one screen instead of a chain of
+    yes/no questions.
+    """
+    defaults = defaults or []
+    items = [Choice(value=value, name=label, enabled=value in defaults) for label, value in choices]
+    return inquirer.checkbox(
+        message=message,
+        choices=items,
+        long_instruction=hint,
+        style=INQUIRER_STYLE,
+        qmark="?",
+    ).execute()
 
 
 def ask_confirm(message: str, *, default: bool = True, hint: str = "") -> bool:

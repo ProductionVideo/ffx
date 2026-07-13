@@ -52,7 +52,11 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         ],
     )
     if mode == "aspect":
-        aspect = prompts.ask_text("Target aspect ratio (e.g. 16:9, 1:1, 9:16):", default="16:9")
+        aspect = prompts.ask_text(
+            "Target aspect ratio (e.g. 16:9, 1:1, 9:16):",
+            default="16:9",
+            validator=prompts.RatioValidator(),
+        )
         return {"mode": "aspect", "aspect": aspect}
 
     if mode == "auto":
@@ -69,16 +73,16 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             return {"mode": "rect", "width": w, "height": h, "x": x, "y": y}
 
     if mode == "border":
-        thickness = int(prompts.ask_text("Border thickness (px):", default="20"))
+        thickness = prompts.ask_int("Border thickness (px):", default=20, min_allowed=1)
         color = prompts.ask_text("Border color (name or hex, e.g. black, white, #ff0000):", default="black")
         return {"mode": "border", "thickness": thickness, "color": color}
 
     return {
         "mode": "rect",
-        "width": int(prompts.ask_text("Crop width (px):", default="1280")),
-        "height": int(prompts.ask_text("Crop height (px):", default="720")),
-        "x": int(prompts.ask_text("Crop X offset (px from left, 0 = centered by ffmpeg):", default="0")),
-        "y": int(prompts.ask_text("Crop Y offset (px from top, 0 = centered by ffmpeg):", default="0")),
+        "width": prompts.ask_int("Crop width (px):", default=1280, min_allowed=2),
+        "height": prompts.ask_int("Crop height (px):", default=720, min_allowed=2),
+        "x": prompts.ask_int("Crop X offset (px from left, 0 = centered by ffmpeg):", default=0, min_allowed=0),
+        "y": prompts.ask_int("Crop Y offset (px from top, 0 = centered by ffmpeg):", default=0, min_allowed=0),
     }
 
 

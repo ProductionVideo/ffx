@@ -52,7 +52,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if preset is not None:
         return dict(preset.values)
 
-    mode = prompts.choose(
+    mode = prompts.fuzzy(
         "How do you want to scale?",
         [
             ("By width", "width"),
@@ -67,14 +67,14 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
 
     params: dict = {"mode": mode}
     if mode == "width":
-        params["width"] = int(prompts.ask_text("Target width (px):", default="1280"))
+        params["width"] = prompts.ask_int("Target width (px):", default=1280, min_allowed=2)
     elif mode == "height":
-        params["height"] = int(prompts.ask_text("Target height (px):", default="720"))
+        params["height"] = prompts.ask_int("Target height (px):", default=720, min_allowed=2)
     elif mode == "percent":
-        params["percent"] = int(prompts.ask_text("Percent of source size:", default="50"))
+        params["percent"] = prompts.ask_int("Percent of source size:", default=50, min_allowed=1)
     else:
-        params["width"] = int(prompts.ask_text("Target width (px):", default="1920"))
-        params["height"] = int(prompts.ask_text("Target height (px):", default="1080"))
+        params["width"] = prompts.ask_int("Target width (px):", default=1920, min_allowed=2)
+        params["height"] = prompts.ask_int("Target height (px):", default=1080, min_allowed=2)
 
     params["algo"] = prompts.choose(
         "Scaling algorithm:", [(label, key) for key, label in _ALGO_LABELS.items()]

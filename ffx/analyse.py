@@ -45,13 +45,15 @@ def prompt() -> dict:
     preset = prompts.choose_preset(PRESETS, message="Analyse — choose a report:")
     if preset is not None:
         return dict(preset.values)
-    checks = []
-    if prompts.ask_confirm("Check for black sections?", default=True):
-        checks.append("black")
-    if prompts.ask_confirm("Check for silent sections?", default=True):
-        checks.append("silence")
-    if prompts.ask_confirm("Check for frozen (static) sections?", default=False):
-        checks.append("freeze")
+    checks = prompts.multi_choose(
+        "Which checks? (space to toggle, enter to confirm)",
+        [
+            ("Black sections", "black"),
+            ("Silent sections", "silence"),
+            ("Frozen (static) sections", "freeze"),
+        ],
+        defaults=["black", "silence"],
+    )
     return {"checks": checks}
 
 

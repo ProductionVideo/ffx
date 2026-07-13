@@ -36,7 +36,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     if preset is not None:
         return dict(preset.values)
 
-    mode = prompts.choose(
+    mode = prompts.fuzzy(
         "What do you want to do with the audio?",
         [
             ("Extract audio (drop the video)", "extract"),
@@ -63,7 +63,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "mute"}
 
     if mode == "channels":
-        action = prompts.choose(
+        action = prompts.fuzzy(
             "Channel action:",
             [
                 ("Downmix to mono", "downmix"),
@@ -76,7 +76,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "channels", "action": action}
 
     if mode == "volume":
-        method = prompts.choose(
+        method = prompts.fuzzy(
             "How?",
             [
                 ("Loudness normalize (streaming, -14 LUFS)", "loudnorm_streaming"),
@@ -88,7 +88,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             default="loudnorm_streaming",
         )
         if method == "gain":
-            gain = float(prompts.ask_text("Gain (dB, negative to lower):", default="0"))
+            gain = prompts.ask_float("Gain (dB, negative to lower):", default=0.0)
             return {"mode": "volume", "method": "gain", "gain_db": gain}
         if method in ("compress", "limit"):
             return {"mode": "volume", "method": method}
@@ -96,8 +96,8 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "volume", "method": "loudnorm", "target": target}
 
     if mode == "fade":
-        fade_in = float(prompts.ask_text("Fade in duration (seconds, 0 = none):", default="0"))
-        fade_out = float(prompts.ask_text("Fade out duration (seconds, 0 = none):", default="3"))
+        fade_in = prompts.ask_float("Fade in duration (seconds, 0 = none):", default=0.0, min_allowed=0)
+        fade_out = prompts.ask_float("Fade out duration (seconds, 0 = none):", default=3.0, min_allowed=0)
         return {"mode": "fade", "fade_in": fade_in, "fade_out": fade_out}
 
     if mode == "resample":
@@ -111,12 +111,10 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "bitdepth", "depth": depth}
 
     if mode == "delay":
-        delay_ms = float(
-            prompts.ask_text(
-                "Delay in milliseconds (negative = audio earlier):",
-                default="0",
-                hint="Shifts audio relative to video - useful for fixing sync drift.",
-            )
+        delay_ms = prompts.ask_float(
+            "Delay in milliseconds (negative = audio earlier):",
+            default=0.0,
+            hint="Shifts audio relative to video - useful for fixing sync drift.",
         )
         return {"mode": "delay", "delay_ms": delay_ms}
 

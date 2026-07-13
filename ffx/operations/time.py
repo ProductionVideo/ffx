@@ -55,8 +55,8 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "framerate", "fps": fps, "method": method}
 
     if mode == "speed":
-        factor = float(
-            prompts.ask_text("Speed factor (2 = double, 0.5 = half, etc.):", default="2")
+        factor = prompts.ask_float(
+            "Speed factor (2 = double, 0.5 = half, etc.):", default=2.0, min_allowed=0.01
         )
         keep_audio = prompts.ask_confirm(
             "Keep audio?", default=True, hint="Pitch-preserved tempo change, not just faster/slower."
@@ -64,7 +64,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "speed", "factor": factor, "keep_audio": keep_audio}
 
     if mode == "loop":
-        count = int(prompts.ask_text("Play the clip how many times?", default="2"))
+        count = prompts.ask_int("Play the clip how many times?", default=2, min_allowed=1)
         return {"mode": "loop", "count": count}
 
     duration = prompts.ask_timestamp("Freeze duration (seconds):", default="3")

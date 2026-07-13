@@ -131,7 +131,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     # container, right audio codec, right engine/profile) so switching
     # codec is the one real decision - every other prompt is an Enter to
     # accept the default, or an arrow-key away from overriding it.
-    vcodec = prompts.choose(
+    vcodec = prompts.fuzzy(
         "Video codec:",
         [
             ("H.264", "h264"),
@@ -158,7 +158,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         if preferred_default in {key for _, key in container_choices}
         else container_choices[0][1]
     )
-    container = prompts.choose(
+    container = prompts.fuzzy(
         "Target container:",
         container_choices,
         default=container_default,
@@ -177,7 +177,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         )
         params["engine"] = "hardware" if use_hw else "software"
     elif vcodec == "dnxhr":
-        params["dnxhr_profile"] = prompts.choose(
+        params["dnxhr_profile"] = prompts.fuzzy(
             "DNxHR profile:",
             _profile_choices(_DNXHR_PROFILES, _DNXHR_KBPS_1080P30, media),
             default="dnxhr_hq",
@@ -187,7 +187,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         params["engine"] = engine
         params.update(_choose_quality(vcodec, engine, media, hardware))
 
-    acodec = prompts.choose(
+    acodec = prompts.fuzzy(
         "Audio codec:",
         [
             ("AAC", "aac"),
@@ -258,7 +258,7 @@ def _choose_quality(
     options.append(("Manual", -1))
     default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
 
-    chosen_index = prompts.choose(
+    chosen_index = prompts.fuzzy(
         "Quality:", options, default=default_index, hint="Sizes are estimates, not guarantees."
     )
     if chosen_index >= 0:
@@ -266,14 +266,14 @@ def _choose_quality(
         return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}
 
     if engine == "hardware":
-        quality = prompts.ask_text("Quality (1-100, higher = better, larger):", default="65")
-        return {"quality_mode": "hw_quality", "hw_quality": int(quality)}
+        quality = prompts.ask_int("Quality (1-100, higher = better, larger):", default=65, min_allowed=1, max_allowed=100)
+        return {"quality_mode": "hw_quality", "hw_quality": quality}
 
-    value = prompts.ask_text(
+    value = prompts.ask_int(
         f"Manual quality ({_MANUAL_QUALITY_HINT[vcodec]}):",
-        default=_MANUAL_QUALITY_DEFAULT[vcodec],
+        default=int(_MANUAL_QUALITY_DEFAULT[vcodec]),
     )
-    return {"quality_mode": "manual", "manual_value": int(value)}
+    return {"quality_mode": "manual", "manual_value": value}
 
 
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
