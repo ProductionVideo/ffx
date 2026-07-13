@@ -21,7 +21,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, OptionList, SelectionList, Static
+from textual.widgets import DirectoryTree, Input, Label, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
@@ -53,6 +53,11 @@ PromptScreen OptionList, PromptScreen SelectionList {
     height: auto;
     max-height: 20;
     border: none;
+    background: $surface;
+}
+PromptScreen DirectoryTree {
+    height: 12;
+    margin-top: 1;
     background: $surface;
 }
 """
@@ -120,6 +125,25 @@ class SelectScreen(PromptScreen):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss((self._choices[event.option_index][1], False))
 
+    def on_key(self, event: events.Key) -> None:
+        """Type-to-jump: a letter moves the highlight to the next choice
+        whose *name* starts with it (icons/prefix symbols are skipped),
+        cycling on repeat - fast navigation without a search box."""
+        if not event.character or not event.character.isalnum():
+            return
+        wanted = event.character.lower()
+        option_list = self.query_one(OptionList)
+        current = option_list.highlighted or 0
+        total = len(self._choices)
+        for step in range(1, total + 1):
+            index = (current + step) % total
+            label = self._choices[index][0]
+            first_word = next((w for w in label.split() if any(c.isascii() and c.isalnum() for c in w)), "")
+            if first_word.lower().startswith(wanted):
+                option_list.highlighted = index
+                event.stop()
+                return
+
 
 class TextScreen(PromptScreen):
     """Free-text entry with inline validation.
@@ -182,9 +206,17 @@ class _PathInput(Input):
         event.prevent_default()
 
 
+class _Browser(DirectoryTree):
+    """DirectoryTree without dotfiles - the noise hides the media."""
+
+    def filter_paths(self, paths):
+        return [p for p in paths if not p.name.startswith(".")]
+
+
 class PathScreen(TextScreen):
-    """Path entry with a live preview line - drop a file in, see the
-    resolved path (or "doesn't exist") before committing to Enter."""
+    """Path entry three ways: type it, drop a file anywhere on the window,
+    or Tab into the directory tree and pick it with arrows + Enter. A live
+    status line previews the resolved path before committing."""
 
     def __init__(
         self,
@@ -200,7 +232,7 @@ class PathScreen(TextScreen):
             message,
             default=default,
             validate=self._check if must_exist else None,
-            hint=hint or "Drag a file from Finder into this window, or type a path.",
+            hint=hint or "Drag a file from Finder in, type a path, or Tab into the browser below.",
             back_enabled=back_enabled,
         )
 
@@ -215,6 +247,32 @@ class PathScreen(TextScreen):
         yield _PathInput(value=self._default)
         yield Static("", classes="prompt-path-status")
         yield Static("", classes="prompt-error")
+        yield _Browser(self._browse_root())
+
+    def _browse_root(self) -> Path:
+        from ffx.ui.prompts import clean_path_input
+
+        if self._default:
+            candidate = Path(clean_path_input(self._default)).expanduser()
+            root = candidate if candidate.is_dir() else candidate.parent
+            if root.is_dir():
+                return root
+        return Path.home()
+
+    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        self._take_from_tree(event.path)
+
+    def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
+        # Only an output-directory question treats picking a folder as an
+        # answer; for a file question the selection just expands it.
+        if not self._must_exist:
+            self._take_from_tree(event.path)
+
+    def _take_from_tree(self, path) -> None:
+        box = self.query_one(Input)
+        box.value = str(path)
+        box.cursor_position = len(box.value)
+        box.focus()
 
     def on_mount(self) -> None:
         # A file dropped on the window before this question appeared (the

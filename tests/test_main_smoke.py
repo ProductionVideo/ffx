@@ -63,7 +63,7 @@ def test_convert_then_scale_end_to_end(monkeypatch, tmp_path, sample_clip):
             "mp4",  # choose: container
             "aac",  # choose: audio codec
             "software",  # choose: encoder (engine)
-            -1,  # choose: Quality menu -> Manual
+            "manual",  # choose: Quality menu -> Manual
             "23",  # ask_text: manual CRF
             "scale",  # choose: category (pipeline menu loops back automatically)
             None,  # choose_preset: Custom...

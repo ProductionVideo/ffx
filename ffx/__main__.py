@@ -193,7 +193,13 @@ def _select_operations(media, caps, ordered_ops=None):
             continue
 
         module = get_operation(choice)
-        params = prompts.run_wizard(module.prompt, media, caps)
+        form_factory = getattr(module, "tui_form", None)
+        if form_factory is not None and tui_session.get_app() is not None:
+            # A single-screen form replaces the sequential prompts when
+            # the full-screen app is live; Esc dismisses with (None, True).
+            params, _ = tui_session.prompt(form_factory(media, caps))
+        else:
+            params = prompts.run_wizard(module.prompt, media, caps)
         if params is None:
             console.print(f"Cancelled {module.display_name}.", style="ffx.muted")
             continue
@@ -424,8 +430,12 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
         console.print("Fair enough, holding off.", style="ffx.muted")
         return "done"
 
-    for input_path, media, job, argv in jobs:
-        console.print(f"\n[bold]▸ Cooking[/bold] {input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
+    for file_number, (input_path, media, job, argv) in enumerate(jobs, 1):
+        # In a batch, both the log line and the progress-bar label carry
+        # "3/12" so there's always a sense of overall position, not just
+        # the current file's percentage.
+        batch = f"{file_number}/{len(jobs)} — " if len(jobs) > 1 else ""
+        console.print(f"\n[bold]▸ Cooking[/bold] {batch}{input_path.name}  [ffx.muted](Ctrl+C to cancel)[/ffx.muted]")
         try:
             if needs_two_pass(job):
                 with tempfile.TemporaryDirectory(prefix="ffx-2pass-") as tmpdir:
@@ -435,17 +445,22 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
                         pass1_argv,
                         total_duration=media.duration,
                         console=console,
-                        description="Pass 1/2 — analyzing",
+                        description=f"{batch}Pass 1/2 — analyzing",
                         cleanup_on_cancel=False,
                     )
                     run_ffmpeg(
                         pass2_argv,
                         total_duration=media.duration,
                         console=console,
-                        description="Pass 2/2 — encoding",
+                        description=f"{batch}Pass 2/2 — encoding",
                     )
             else:
-                run_ffmpeg(argv, total_duration=media.duration, console=console)
+                run_ffmpeg(
+                    argv,
+                    total_duration=media.duration,
+                    console=console,
+                    description=f"{batch}Encoding" if batch else "Encoding",
+                )
         except FFmpegCancelled:
             console.print("Alright, backing off — cleaned up after myself.", style="ffx.warn")
             return "done"

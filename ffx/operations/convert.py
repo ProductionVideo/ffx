@@ -155,6 +155,15 @@ _AUDIO_CODECS = {
 }
 
 
+def tui_form(media: MediaInfo, hardware: HardwareCapabilities):
+    """The single-screen Textual form used instead of prompt() when the
+    full-screen app is live - same params dict out, one screen instead of
+    six sequential questions."""
+    from ffx.tui.forms import ConvertScreen
+
+    return ConvertScreen(media, hardware)
+
+
 def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
     # Codec first, then everything else defaults sensibly around it (right
     # container, right audio codec, right engine/profile) so switching
@@ -184,19 +193,7 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
             style="ffx.error",
         )
         return None
-    compat_key = _compat_key_for(vcodec, media)
-    compatible_containers = _CONTAINER_COMPAT.get(compat_key)
-    container_choices = (
-        [c for c in _CONTAINER_LABELS if c[1] in compatible_containers]
-        if compatible_containers is not None
-        else _CONTAINER_LABELS
-    )
-    preferred_default = _DEFAULT_CONTAINER[vcodec]
-    container_default = (
-        preferred_default
-        if preferred_default in {key for _, key in container_choices}
-        else container_choices[0][1]
-    )
+    container_choices, container_default = container_options(vcodec, media)
     container = prompts.choose(
         "Target container:",
         container_choices,
@@ -255,6 +252,54 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
     return params
 
 
+def container_options(vcodec: str, media: MediaInfo) -> tuple[list[tuple[str, str]], str]:
+    """(choices, default) for the target container, filtered to what this
+    codec can actually be muxed into. Shared by both UIs."""
+    compat_key = _compat_key_for(vcodec, media)
+    compatible = _CONTAINER_COMPAT.get(compat_key)
+    choices = [c for c in _CONTAINER_LABELS if compatible is None or c[1] in compatible]
+    preferred = _DEFAULT_CONTAINER[vcodec]
+    default = preferred if preferred in {key for _, key in choices} else choices[0][1]
+    return choices, default
+
+
+def engine_options(vcodec: str, hardware: HardwareCapabilities) -> tuple[list[tuple[str, str]], str]:
+    """(choices, default) for the encoder engine of a standard codec."""
+    codec_info = _VIDEO_CODECS[vcodec]
+    options = [("Software — best quality, slower", "software")]
+    default = "software"
+    if codec_info["hw"] and hardware.has_encoder(codec_info["hw"]):
+        options.insert(0, ("Hardware — fast (Apple Silicon)", "hardware"))
+        default = "hardware"
+    return options, default
+
+
+def audio_kbps_for(acodec: str, media: MediaInfo) -> float | None:
+    """The predictable audio bitrate a size target can budget around, or
+    None when there isn't one (FLAC/PCM are content/format dependent)."""
+    if acodec == "copy":
+        audio = media.primary_audio
+        return (audio.bit_rate / 1000) if audio and audio.bit_rate else None
+    return _AUDIO_CODECS[acodec]["bitrate_k"]
+
+
+def quality_options(
+    vcodec: str, engine: str, media: MediaInfo, hardware: HardwareCapabilities, acodec: str
+) -> tuple[list, list[tuple[str, str]], str]:
+    """(tier rows, (label, token) choices, default token) for the quality
+    menu of a standard codec. Tokens: "tier:<i>", "target", "manual"."""
+    rows = [r for r in preset_calc.estimate_presets(vcodec, media, hardware) if r.engine == engine]
+    options = [
+        (f"{r.tier_name} — ~{preset_calc.humanize_size(r.estimated_size_mb)}, {r.speed_note}", f"tier:{i}")
+        for i, r in enumerate(rows)
+    ]
+    if audio_kbps_for(acodec, media) is not None:
+        options.append(("Target size... (enter an exact MB)", "target"))
+    options.append(("Manual", "manual"))
+    default = next((f"tier:{i}" for i, r in enumerate(rows) if r.tier_name == "Balanced"), "manual")
+    return rows, options, default
+
+
 def _compat_key_for(vcodec: str, media: MediaInfo) -> str | None:
     """Which _CONTAINER_COMPAT key applies, or None if unknown (don't filter)."""
     if vcodec != "copy_v":
@@ -278,12 +323,7 @@ def _profile_choices(
 
 
 def _choose_engine(vcodec: str, hardware: HardwareCapabilities) -> str:
-    codec_info = _VIDEO_CODECS[vcodec]
-    options = [("Software — best quality, slower", "software")]
-    default = "software"
-    if codec_info["hw"] and hardware.has_encoder(codec_info["hw"]):
-        options.insert(0, ("Hardware — fast (Apple Silicon)", "hardware"))
-        default = "hardware"
+    options, default = engine_options(vcodec, hardware)
     if len(options) == 1:
         return options[0][1]
     return prompts.choose(
@@ -298,39 +338,18 @@ def _choose_quality(
     manual escape hatch - compression is a single, clearly labeled choice
     here, defaulted to "Balanced".
     """
-    rows = [r for r in preset_calc.estimate_presets(vcodec, media, hardware) if r.engine == engine]
-    # Index-based values/default rather than handing InquirerPy the
-    # EncodePreset objects directly - see the identity-loss note on
-    # prompts.choose_preset.
-    options = [
-        (f"{r.tier_name} — ~{preset_calc.humanize_size(r.estimated_size_mb)}, {r.speed_note}", i)
-        for i, r in enumerate(rows)
-    ]
-
-    if acodec == "copy":
-        # Passthrough audio keeps the source's own bitrate exactly - that's
-        # knowable from the probe, unlike FLAC (content-dependent) or PCM
-        # (depends on a sample rate/depth this menu never asks for).
-        audio = media.primary_audio
-        audio_kbps = (audio.bit_rate / 1000) if audio and audio.bit_rate else None
-    else:
-        audio_kbps = _AUDIO_CODECS[acodec]["bitrate_k"]
-    # No predictable bitrate to subtract - only offer a size target when
-    # there's a real number to work from.
-    if audio_kbps is not None:
-        options.append(("Target size... (enter an exact MB)", -2))
-    options.append(("Manual", -1))
-    default_index = next((i for i, r in enumerate(rows) if r.tier_name == "Balanced"), -1)
-
-    chosen_index = prompts.choose(
-        "Quality:", options, default=default_index, hint="Sizes are estimates, not guarantees."
+    rows, options, default_token = quality_options(vcodec, engine, media, hardware, acodec)
+    token = prompts.choose(
+        "Quality:", options, default=default_token, hint="Sizes are estimates, not guarantees."
     )
 
-    if chosen_index == -2:
+    if token == "target":
         target_mb = prompts.ask_float(
             "Target size MB (1GB = 1000MB):", default=25.0, min_allowed=0.1, hint="ffx works out the bitrate needed to hit this."
         )
-        result = preset_calc.target_size_video_kbps(target_mb, media.duration or 0.0, audio_kbps)
+        result = preset_calc.target_size_video_kbps(
+            target_mb, media.duration or 0.0, audio_kbps_for(acodec, media)
+        )
         if not result.feasible:
             console.print(
                 f"Heads up: {target_mb:g} MB over {media.duration:.0f}s is a very tight budget — "
@@ -339,8 +358,8 @@ def _choose_quality(
             )
         return {"quality_mode": "target_size", "video_kbps": result.video_kbps, "target_size_mb": target_mb}
 
-    if chosen_index >= 0:
-        chosen = rows[chosen_index]
+    if token.startswith("tier:"):
+        chosen = rows[int(token.split(":")[1])]
         return {"quality_mode": "bitrate", "video_kbps": chosen.target_video_kbps}
 
     if engine == "hardware":

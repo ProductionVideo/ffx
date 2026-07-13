@@ -100,6 +100,5 @@ Run in a terminal, ffx opens a full-screen app (built on [Textual](https://textu
 
 ## Roadmap
 
-- Redesign operation flows as single-screen forms (Convert's six questions on one screen) instead of sequential prompts.
-- A file browser pane for input picking.
-- Batch progress overview when running a directory.
+- Extend single-screen forms (Convert has one) to more operations — Scale, Sound, and Composite are next.
+- Publish to PyPI so `uv tool install` works without the git URL.
