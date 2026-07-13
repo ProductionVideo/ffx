@@ -15,7 +15,7 @@ from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
 from ffx.operations import CATEGORIES, get_operation
 from ffx.runner import FFmpegCancelled, FFmpegRunError, run as run_ffmpeg
 from ffx.ui import prompts
-from ffx.ui.theme import console, print_banner, print_step
+from ffx.ui.theme import CATEGORY_COLORS, FIELD_COLORS, console, print_banner, print_step
 
 _MEDIA_EXTENSIONS = {
     ".mp4", ".mov", ".mkv", ".avi", ".webm", ".mxf", ".ts", ".m4v",
@@ -70,14 +70,19 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
     rather than after building a whole command around it.
     """
     title = representative.path.name if len(inputs) == 1 else f"{representative.path.name} (+ {len(inputs) - 1} more)"
-    table = Table(title=title, show_header=False, box=box.ROUNDED, border_style="ffx.accent")
+    table = Table(title=title, show_header=False, box=box.SQUARE, border_style="ffx.accent")
     table.add_column("Property", style="ffx.muted")
-    table.add_column("Value", style="bold")
+    table.add_column("Value")
     for key, value in summary_rows(representative):
         if key == "File":
             continue
-        table.add_row(key, value)
+        _add_field_row(table, key, value)
     console.print(table)
+
+
+def _add_field_row(table: Table, key: str, value: str) -> None:
+    color = FIELD_COLORS.get(key)
+    table.add_row(key, f"[bold {color}]{value}[/]" if color else f"[bold]{value}[/]")
 
 
 def _select_operations(media, caps):
@@ -123,19 +128,22 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
     for i, (module, params) in enumerate(ordered_ops, 1):
         op = module.build(params, media, caps)
         icon = _CATEGORY_ICON.get(module.name, "▸")
-        lines.append(f"[ffx.ok]{i}.[/ffx.ok] {icon} [bold]{module.display_name}[/bold]  {op.description}")
+        color = CATEGORY_COLORS.get(module.name, "#00afff")
+        lines.append(
+            f"[ffx.ok]{i}.[/ffx.ok] [bold {color}]{icon} {module.display_name}[/]  {op.description}"
+        )
     console.print(
-        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.accent", box=box.ROUNDED)
+        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.accent", box=box.SQUARE)
     )
 
 
 def _run_analyse(media) -> None:
     params = analyse_prompt()
-    table = Table(title=f"Analysis: {media.path.name}", box=box.ROUNDED, border_style="ffx.accent")
+    table = Table(title=f"Analysis: {media.path.name}", box=box.SQUARE, border_style="ffx.accent")
     table.add_column("Property", style="ffx.muted")
-    table.add_column("Value", style="bold")
+    table.add_column("Value")
     for key, value in summary_rows(media):
-        table.add_row(key, value)
+        _add_field_row(table, key, value)
     console.print(table)
 
     if params["checks"]:
@@ -245,7 +253,7 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
             title=f"Command{'s' if len(jobs) > 1 else ''} to run",
             title_align="left",
             border_style="ffx.ok",
-            box=box.HEAVY,
+            box=box.SQUARE,
         )
     )
 
