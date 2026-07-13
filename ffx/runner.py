@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import selectors
 import subprocess
+import threading
 from pathlib import Path
 
 from rich.console import Console
@@ -14,6 +15,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from ffx.tui import session as tui_session
 from ffx.ui.theme import FFX_THEME
 
 
@@ -105,9 +107,14 @@ def _drive_with_progress(
     Shared by run() and run_with_output() - they differ only in what they
     do with the result (raise + clean up an output file on failure, vs.
     just handing back the captured stderr regardless of exit status).
+
+    When the Textual app is active (ffx.tui.session), progress reports to
+    its in-place bar instead of drawing a rich Progress over the log, and
+    cancellation arrives via the session's cancel event (the app owns the
+    keyboard, so a real KeyboardInterrupt can't reach this thread) - it's
+    surfaced as KeyboardInterrupt so both paths share one cleanup story.
     """
     progress_argv = [*argv[:-1], "-progress", "pipe:1", "-nostats", argv[-1]]
-    stderr_lines: list[str] = []
 
     process = subprocess.Popen(
         progress_argv,
@@ -117,6 +124,18 @@ def _drive_with_progress(
         bufsize=1,
     )
     assert process.stdout is not None and process.stderr is not None
+
+    handle = tui_session.progress_open(description, total_duration)
+    if handle is not None:
+        try:
+            return _pump(
+                process,
+                total_duration=total_duration,
+                on_progress=handle.update,
+                cancel_event=handle.cancel_event,
+            )
+        finally:
+            handle.close()
 
     try:
         with Progress(
@@ -131,30 +150,52 @@ def _drive_with_progress(
             task = progress.add_task(
                 description, total=total_duration if total_duration > 0 else None
             )
-
-            selector = selectors.DefaultSelector()
-            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-
-            open_streams = 2
-            while open_streams > 0:
-                for key, _ in selector.select():
-                    line = key.fileobj.readline()
-                    if line == "":
-                        selector.unregister(key.fileobj)
-                        open_streams -= 1
-                        continue
-                    if key.data == "stdout":
-                        _handle_progress_line(line, progress, task, total_duration)
-                    else:
-                        stderr_lines.append(line)
-
-            returncode = process.wait()
+            return _pump(
+                process,
+                total_duration=total_duration,
+                on_progress=lambda seconds: progress.update(task, completed=seconds),
+            )
     except KeyboardInterrupt:
         _kill(process)
         raise
 
-    return returncode, stderr_lines
+
+def _pump(
+    process: subprocess.Popen,
+    *,
+    total_duration: float,
+    on_progress,
+    cancel_event: threading.Event | None = None,
+) -> tuple[int, list[str]]:
+    """Drain ffmpeg's progress stream (stdout) and stderr until both close.
+
+    The select timeout exists solely so a set cancel_event is noticed even
+    while ffmpeg is between writes.
+    """
+    stderr_lines: list[str] = []
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+
+    open_streams = 2
+    while open_streams > 0:
+        if cancel_event is not None and cancel_event.is_set():
+            _kill(process)
+            raise KeyboardInterrupt
+        for key, _ in selector.select(timeout=0.25):
+            line = key.fileobj.readline()
+            if line == "":
+                selector.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            if key.data == "stdout":
+                seconds = _parse_progress_line(line, total_duration)
+                if seconds is not None:
+                    on_progress(seconds)
+            else:
+                stderr_lines.append(line)
+
+    return process.wait(), stderr_lines
 
 
 def _kill(process: subprocess.Popen) -> None:
@@ -166,16 +207,17 @@ def _kill(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def _handle_progress_line(line: str, progress: Progress, task, total_duration: float) -> None:
+def _parse_progress_line(line: str, total_duration: float) -> float | None:
+    """Completed seconds encoded in one `-progress pipe:1` line, or None."""
     line = line.strip()
-    if not line or "=" not in line:
-        return
+    if not line or "=" not in line or total_duration <= 0:
+        return None
     key, _, value = line.partition("=")
-    if key == "out_time_ms" and total_duration > 0:
+    if key == "out_time_ms":
         try:
-            seconds = int(value) / 1_000_000
+            return min(int(value) / 1_000_000, total_duration)
         except ValueError:
-            return
-        progress.update(task, completed=min(seconds, total_duration))
-    elif key == "progress" and value.strip() == "end":
-        progress.update(task, completed=total_duration if total_duration > 0 else None)
+            return None
+    if key == "progress" and value.strip() == "end":
+        return total_duration
+    return None

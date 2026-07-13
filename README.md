@@ -68,6 +68,12 @@ uv run pytest
 
 The test suite (100+ tests, sub-second) covers argv construction, every operation, and the wizard flow without invoking ffmpeg, plus a smoke test that drives the whole app end-to-end against a real ffmpeg.
 
+## Interfaces
+
+Run in a terminal, ffx opens a full-screen app (built on [Textual](https://textual.textualize.io/)) with always-visible media info and pipeline panes, an activity log, and in-place encode progress — in the spirit of btop/lazygit. Set `FFX_CLASSIC=1` to use the original inline wizard instead; both drive the same operations, and every prompt supports going back (Esc in the app, Ctrl+Z inline).
+
 ## Roadmap
 
-The current interface is a linear wizard. The plan is a full-screen TUI (in the spirit of btop/lazygit) built on [Textual](https://textual.textualize.io/): file browser, always-visible media info and pipeline panes, and in-place progress — the operation/composition core is already UI-agnostic, so it carries over unchanged.
+- Redesign operation flows as single-screen forms (Convert's six questions on one screen) instead of sequential prompts.
+- A file browser pane for input picking.
+- Batch progress overview when running a directory.

@@ -113,6 +113,44 @@ def _step(render: Callable[[], tuple[Any, bool]]) -> Any:
     return _current.step(render)
 
 
+def _tui_prompt(make_screen: Callable[[bool], Any]) -> Optional[tuple[Any, bool]]:
+    """Route one prompt to the Textual app when it's live.
+
+    Returns the (value, back) pair a render() closure is expected to
+    produce, or None when no app is active and the caller should fall
+    through to its InquirerPy path. `make_screen` receives back_enabled
+    (whether this prompt sits inside a run_wizard back-stack).
+    """
+    from ffx.tui import session
+
+    if session.get_app() is None:
+        return None
+    return session.prompt(make_screen(_current is not None))
+
+
+class _Document:
+    """The one attribute of a prompt_toolkit document our validators read."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+def _validator_fn(validator: Optional[Validator]) -> Optional[Callable[[str], Optional[str]]]:
+    """Adapt an InquirerPy/prompt_toolkit Validator to plain
+    text -> error-message-or-None, the shape TextScreen validates with."""
+    if validator is None:
+        return None
+
+    def check(text: str) -> Optional[str]:
+        try:
+            validator.validate(_Document(text))
+        except ValidationError as exc:
+            return exc.message
+        return None
+
+    return check
+
+
 def _back_hint(hint: str) -> str:
     if _current is None:
         return hint
@@ -201,9 +239,18 @@ def choose_preset(presets: list[Preset], *, message: str = "Choose a preset:") -
     dict, which breaks any caller that expects a Preset.
     """
 
+    labelled = [(f"{p.name}  [{p.description}]", i) for i, p in enumerate(presets)]
+    labelled.append(("Custom... (set every option yourself)", -1))
+
     def render():
-        choices = [Choice(value=i, name=f"{p.name}  [{p.description}]") for i, p in enumerate(presets)]
-        choices.append(Choice(value=-1, name="Custom... (set every option yourself)"))
+        from ffx.tui.screens import SelectScreen
+
+        routed = _tui_prompt(
+            lambda back: SelectScreen(message, labelled, default=0, back_enabled=back)
+        )
+        if routed is not None:
+            return routed
+        choices = [Choice(value=value, name=label) for label, value in labelled]
         if _current is not None:
             choices.append(Choice(value=BACK, name="Back"))
         index = inquirer.select(
@@ -238,6 +285,13 @@ def choose(
     """
 
     def render():
+        from ffx.tui.screens import SelectScreen
+
+        routed = _tui_prompt(
+            lambda back: SelectScreen(message, choices, default=default, hint=hint, back_enabled=back)
+        )
+        if routed is not None:
+            return routed
         items = [Choice(value=value, name=label) for label, value in choices]
         if _current is not None:
             items.append(Choice(value=BACK, name="Back"))
@@ -256,6 +310,15 @@ def choose(
 
 def ask_text(message: str, *, default: str = "", validator: Optional[Validator] = None, hint: str = "") -> str:
     def render():
+        from ffx.tui.screens import TextScreen
+
+        routed = _tui_prompt(
+            lambda back: TextScreen(
+                message, default=default, validate=_validator_fn(validator), hint=hint, back_enabled=back
+            )
+        )
+        if routed is not None:
+            return routed
         back_enabled = _current is not None
         prompt_obj = inquirer.text(
             message=message,
@@ -335,6 +398,13 @@ def multi_choose(
     defaults = defaults or []
 
     def render():
+        from ffx.tui.screens import CheckScreen
+
+        routed = _tui_prompt(
+            lambda back: CheckScreen(message, choices, defaults=defaults, hint=hint, back_enabled=back)
+        )
+        if routed is not None:
+            return routed
         back_enabled = _current is not None
         items = [Choice(value=value, name=label, enabled=value in defaults) for label, value in choices]
         prompt_obj = inquirer.checkbox(
@@ -353,6 +423,13 @@ def multi_choose(
 
 def ask_confirm(message: str, *, default: bool = True, hint: str = "") -> bool:
     def render():
+        from ffx.tui.screens import ConfirmScreen
+
+        routed = _tui_prompt(
+            lambda back: ConfirmScreen(message, default=default, hint=hint, back_enabled=back)
+        )
+        if routed is not None:
+            return routed
         back_enabled = _current is not None
         prompt_obj = inquirer.confirm(
             message=message,
@@ -370,6 +447,19 @@ def ask_confirm(message: str, *, default: bool = True, hint: str = "") -> bool:
 
 def ask_existing_path(message: str, *, default: str = "") -> Path:
     def render():
+        from ffx.tui.screens import TextScreen
+
+        routed = _tui_prompt(
+            lambda back: TextScreen(
+                message,
+                default=default,
+                validate=_validator_fn(ExistingPathValidator()),
+                back_enabled=back,
+            )
+        )
+        if routed is not None:
+            value, back = routed
+            return clean_path_input(value), back
         back_enabled = _current is not None
         prompt_obj = inquirer.filepath(
             message=message,
@@ -390,6 +480,12 @@ def ask_existing_path(message: str, *, default: str = "") -> Path:
 
 def ask_output_path(message: str, *, default: str = "") -> Path:
     def render():
+        from ffx.tui.screens import TextScreen
+
+        routed = _tui_prompt(lambda back: TextScreen(message, default=default, back_enabled=back))
+        if routed is not None:
+            value, back = routed
+            return clean_path_input(value), back
         back_enabled = _current is not None
         prompt_obj = inquirer.filepath(
             message=message,

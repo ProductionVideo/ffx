@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ffx import hardware, preflight, presets as preset_calc, probe, recipes
+from ffx.tui import session as tui_session
 from ffx.analyse import run_qc, summary_rows
 from ffx.analyse import prompt as analyse_prompt
 from ffx.build import build_argv, build_two_pass_argvs, needs_two_pass
@@ -26,11 +27,29 @@ _MEDIA_EXTENSIONS = {
 
 
 def main() -> None:
+    if _use_tui():
+        if not preflight.check():
+            sys.exit(1)
+        caps = hardware.detect()
+        from ffx.tui.app import FFXApp
+
+        app = FFXApp(lambda: _flow(caps))
+        app.run()
+        sys.exit(app.return_code or 0)
+
     print_banner()
     if not preflight.check():
         sys.exit(1)
-    caps = hardware.detect()
+    _flow(hardware.detect())
 
+
+def _use_tui() -> bool:
+    # The full-screen app needs a real terminal; under pytest, pipes, or
+    # FFX_CLASSIC=1 the original inline wizard runs instead.
+    return sys.stdout.isatty() and os.environ.get("FFX_CLASSIC") != "1"
+
+
+def _flow(caps) -> None:
     try:
         while True:
             inputs = _select_inputs()
@@ -104,7 +123,8 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
         if key == "File":
             continue
         _add_field_row(table, key, value)
-    console.print(table)
+    if not tui_session.show_media(table):
+        console.print(table)
 
 
 def _add_field_row(table: Table, key: str, value: str) -> None:
@@ -120,6 +140,8 @@ def _select_operations(media, caps, ordered_ops=None):
     while True:
         if ordered_ops:
             _print_pipeline(ordered_ops, media, caps)
+        else:
+            tui_session.show_pipeline("[dim]Pipeline is empty.[/dim]")
 
         # Re-listed every loop (cheap - just a directory glob), so a
         # delete inside the Recipes flow is reflected the next time this
@@ -181,6 +203,8 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
         lines.append(
             f"[ffx.ok]{i}.[/ffx.ok] [bold {color}]{icon} {module.display_name}[/]  {op.description}"
         )
+    if tui_session.show_pipeline("\n".join(lines)):
+        return
     console.print(
         Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.border", box=box.SQUARE)
     )
