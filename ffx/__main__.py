@@ -44,7 +44,10 @@ def main() -> None:
         sys.exit(130)
 
 
-_CATEGORY_ICON = {"convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "time": "◷", "sound": "♪"}
+_CATEGORY_ICON = {
+    "convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "time": "◷", "sound": "♪",
+    "metadata": "▤", "repair": "✚",
+}
 
 
 def _select_inputs() -> list[Path]:
@@ -190,16 +193,19 @@ def _output_extension(ordered_ops, source_ext: str) -> str:
 
 def _has_stream_copy_conflict(ordered_ops) -> bool:
     # Cheap heuristics for the pre-flight warning below: cut.py's fast
-    # mode ("-c copy") and sound.py's extract mode ("-vn", no video
-    # stream) each can't be combined with another op that needs a
-    # video filter/re-encode.
+    # mode, sound.py's extract mode, and repair.py's tolerant remux all
+    # emit "-c copy" or "-vn" (no re-encode/no video), which can't be
+    # combined with another op that needs a video filter/re-encode.
     has_copy_cut = any(
         module.name == "cut" and not params.get("reencode", True) for module, params in ordered_ops
     )
     has_audio_only_extract = any(
         module.name == "sound" and params.get("mode") == "extract" for module, params in ordered_ops
     )
-    return (has_copy_cut or has_audio_only_extract) and len(ordered_ops) > 1
+    has_remux = any(
+        module.name == "repair" and params.get("mode") == "remux" for module, params in ordered_ops
+    )
+    return (has_copy_cut or has_audio_only_extract or has_remux) and len(ordered_ops) > 1
 
 
 def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
