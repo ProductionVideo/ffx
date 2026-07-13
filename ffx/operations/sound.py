@@ -17,6 +17,8 @@ _AUDIO_CODECS = {
 
 _SAMPLE_RATES = [("44.1 kHz", "44100"), ("48 kHz", "48000"), ("96 kHz", "96000")]
 
+_BIT_DEPTHS = {"16": "pcm_s16le", "24": "pcm_s24le", "32": "pcm_s32le"}
+
 PRESETS = [
     Preset("Extract to MP3", "Drop the video, keep MP3 audio", {"mode": "extract", "codec": "mp3"}),
     Preset("Remove audio (mute)", "Keep the video, drop the audio track", {"mode": "mute"}),
@@ -40,9 +42,12 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             ("Extract audio (drop the video)", "extract"),
             ("Remove audio (mute)", "mute"),
             ("Channels — mono/stereo/swap/select", "channels"),
-            ("Volume / loudness normalize", "volume"),
+            ("Volume, normalize, compress, or limit", "volume"),
             ("Fade in/out", "fade"),
             ("Change sample rate", "resample"),
+            ("Change bit depth (PCM)", "bitdepth"),
+            ("Delay/advance audio timing", "delay"),
+            ("Keep only one audio track", "tracks"),
         ],
     )
 
@@ -77,12 +82,16 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
                 ("Loudness normalize (streaming, -14 LUFS)", "loudnorm_streaming"),
                 ("Loudness normalize (broadcast, -23 LUFS)", "loudnorm_broadcast"),
                 ("Manual gain (dB)", "gain"),
+                ("Compressor (even out dynamics)", "compress"),
+                ("Limiter (prevent clipping)", "limit"),
             ],
             default="loudnorm_streaming",
         )
         if method == "gain":
             gain = float(prompts.ask_text("Gain (dB, negative to lower):", default="0"))
             return {"mode": "volume", "method": "gain", "gain_db": gain}
+        if method in ("compress", "limit"):
+            return {"mode": "volume", "method": method}
         target = -14 if method == "loudnorm_streaming" else -23
         return {"mode": "volume", "method": "loudnorm", "target": target}
 
@@ -91,8 +100,36 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         fade_out = float(prompts.ask_text("Fade out duration (seconds, 0 = none):", default="3"))
         return {"mode": "fade", "fade_in": fade_in, "fade_out": fade_out}
 
-    rate = prompts.choose("Target sample rate:", _SAMPLE_RATES, default="48000")
-    return {"mode": "resample", "rate": rate}
+    if mode == "resample":
+        rate = prompts.choose("Target sample rate:", _SAMPLE_RATES, default="48000")
+        return {"mode": "resample", "rate": rate}
+
+    if mode == "bitdepth":
+        depth = prompts.choose(
+            "Bit depth:", [("16-bit", "16"), ("24-bit", "24"), ("32-bit float", "32")], default="24"
+        )
+        return {"mode": "bitdepth", "depth": depth}
+
+    if mode == "delay":
+        delay_ms = float(
+            prompts.ask_text(
+                "Delay in milliseconds (negative = audio earlier):",
+                default="0",
+                hint="Shifts audio relative to video - useful for fixing sync drift.",
+            )
+        )
+        return {"mode": "delay", "delay_ms": delay_ms}
+
+    streams = media.audio_streams
+    if len(streams) < 2:
+        return {"mode": "tracks", "keep_index": 0}
+    choices = []
+    for i, s in enumerate(streams):
+        lang = s.tags.get("language", "")
+        label = f"Track {i}: {s.codec_name}, {s.channels or '?'}ch" + (f" [{lang}]" if lang else "")
+        choices.append((label, i))
+    keep = prompts.choose("Keep which audio track? (others are dropped)", choices)
+    return {"mode": "tracks", "keep_index": keep}
 
 
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
@@ -115,6 +152,16 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
             name=name, display_name=display_name, description=f"Resample to {params['rate']}Hz",
             output_args=["-ar", params["rate"]], serializable={},
         )
+    if mode == "bitdepth":
+        depth = params["depth"]
+        return OperationSettings(
+            name=name, display_name=display_name, description=f"{depth}-bit PCM",
+            output_args=["-c:a", _BIT_DEPTHS[depth]], serializable={},
+        )
+    if mode == "delay":
+        return _build_delay(params)
+    if mode == "tracks":
+        return _build_tracks(params, media)
     raise ValueError(f"unknown sound mode: {mode}")
 
 
@@ -162,11 +209,28 @@ def _build_channels(params: dict) -> OperationSettings:
 
 
 def _build_volume(params: dict) -> OperationSettings:
-    if params.get("method") == "gain":
+    method = params.get("method")
+    if method == "gain":
         gain = params["gain_db"]
         return OperationSettings(
             name=name, display_name=display_name, description=f"Volume {gain:+.1f}dB",
             audio_filter=[f"volume={gain}dB"], serializable={},
+        )
+    if method == "compress":
+        return OperationSettings(
+            name=name,
+            display_name=display_name,
+            description="Dynamic range compression",
+            audio_filter=["acompressor=threshold=-18dB:ratio=3:attack=20:release=250"],
+            serializable={},
+        )
+    if method == "limit":
+        return OperationSettings(
+            name=name,
+            display_name=display_name,
+            description="Peak limiter",
+            audio_filter=["alimiter=limit=-1dB"],
+            serializable={},
         )
     target = params.get("target", -14)
     return OperationSettings(
@@ -192,6 +256,41 @@ def _build_fade(params: dict, media: MediaInfo) -> OperationSettings:
         display_name=display_name,
         description=f"Fade in {fade_in}s / out {fade_out}s",
         audio_filter=filters,
+        serializable={},
+    )
+
+
+def _build_delay(params: dict) -> OperationSettings:
+    ms = params["delay_ms"]
+    if ms >= 0:
+        return OperationSettings(
+            name=name,
+            display_name=display_name,
+            description=f"Delay audio {ms:.0f}ms",
+            audio_filter=[f"adelay=delays={ms}:all=1"],
+            serializable={},
+        )
+    secs = abs(ms) / 1000
+    return OperationSettings(
+        name=name,
+        display_name=display_name,
+        description=f"Advance audio {abs(ms):.0f}ms",
+        audio_filter=[f"atrim=start={secs}", "asetpts=PTS-STARTPTS"],
+        serializable={},
+    )
+
+
+def _build_tracks(params: dict, media: MediaInfo) -> OperationSettings:
+    idx = params.get("keep_index", 0)
+    output_args = []
+    if media.primary_video:
+        output_args += ["-map", "0:v:0"]
+    output_args += ["-map", f"0:a:{idx}"]
+    return OperationSettings(
+        name=name,
+        display_name=display_name,
+        description=f"Keep only audio track {idx}",
+        output_args=output_args,
         serializable={},
     )
 

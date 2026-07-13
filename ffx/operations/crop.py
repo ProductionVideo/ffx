@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
+import subprocess
+
 from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings, Preset
 from ffx.ui import prompts
+from ffx.ui.theme import console
 
 name = "crop"
 display_name = "Crop"
 description = "Reframe to a ratio or exact rectangle"
+
+_CROPDETECT_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
 PRESETS = [
     Preset(
@@ -41,11 +47,31 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         [
             ("By aspect ratio (centered)", "aspect"),
             ("Exact rectangle", "rect"),
+            ("Auto-detect crop region (analyzes the video)", "auto"),
+            ("Add a border", "border"),
         ],
     )
     if mode == "aspect":
         aspect = prompts.ask_text("Target aspect ratio (e.g. 16:9, 1:1, 9:16):", default="16:9")
         return {"mode": "aspect", "aspect": aspect}
+
+    if mode == "auto":
+        detected = _detect_crop(media)
+        if detected is None:
+            console.print(
+                "Couldn't detect a crop region (no letterboxing found) - falling back to manual entry.",
+                style="ffx.warn",
+            )
+            mode = "rect"
+        else:
+            w, h, x, y = detected
+            console.print(f"Detected crop: {w}x{h} at ({x},{y})", style="ffx.ok")
+            return {"mode": "rect", "width": w, "height": h, "x": x, "y": y}
+
+    if mode == "border":
+        thickness = int(prompts.ask_text("Border thickness (px):", default="20"))
+        color = prompts.ask_text("Border color (name or hex, e.g. black, white, #ff0000):", default="black")
+        return {"mode": "border", "thickness": thickness, "color": color}
 
     return {
         "mode": "rect",
@@ -56,10 +82,35 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
     }
 
 
+def _detect_crop(media: MediaInfo) -> tuple[int, int, int, int] | None:
+    sample_duration = min(media.duration, 20) if media.duration else 20
+    args = [
+        "ffmpeg", "-i", str(media.path),
+        "-t", str(sample_duration),
+        "-vf", "cropdetect=24:2:0",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+    matches = _CROPDETECT_RE.findall(result.stderr)
+    if not matches:
+        return None
+    w, h, x, y = matches[-1]
+    return int(w), int(h), int(x), int(y)
+
+
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
-    if params["mode"] == "aspect":
+    mode = params["mode"]
+    if mode == "aspect":
         vf = _aspect_crop_filter(params["aspect"])
         desc = f"Crop to {params['aspect']} (centered)"
+    elif mode == "border":
+        t = params["thickness"]
+        color = params.get("color", "black")
+        vf = f"pad=iw+{2 * t}:ih+{2 * t}:{t}:{t}:color={color}"
+        desc = f"Add {t}px {color} border"
     else:
         w, h, x, y = params["width"], params["height"], params["x"], params["y"]
         vf = f"crop={w}:{h}:{x}:{y}"
