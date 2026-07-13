@@ -51,8 +51,19 @@ _POSITION_EXPR = {
 }
 
 
-def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
+def unavailable_reason(hardware: HardwareCapabilities) -> str | None:
+    """Why this operation can't run on this ffmpeg build, or None if it can.
+
+    Shown inline on the menu entry so the limitation is visible before
+    picking it, not discovered after.
+    """
     if not hardware.has_filter("drawtext"):
+        return "this ffmpeg lacks drawtext — brew install ffmpeg-full"
+    return None
+
+
+def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
+    if unavailable_reason(hardware):
         console.print(
             "This ffmpeg build doesn't have the 'drawtext' filter (it needs libfreetype). "
             "Homebrew's default ffmpeg formula doesn't include it - try "

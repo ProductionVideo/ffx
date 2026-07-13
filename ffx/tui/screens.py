@@ -4,12 +4,19 @@ Every screen dismisses with a (value, back) tuple, matching the contract
 of the render() closures inside ffx.ui.prompts, so the wizard back-stack
 (run_wizard/GoBack) works identically in both UIs. Escape is "back" when
 the prompt is inside a wizard, mirroring Ctrl+Z/Back in the classic UI.
+
+Prompts render as a bottom sheet over an undimmed screen (rather than a
+centered dialog) so the Media/Pipeline panes and the activity log stay
+readable while answering - anything an operation prints (a warning, an
+unavailability explanation) is visible right above the question.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -20,14 +27,14 @@ from textual.widgets.selection_list import Selection
 
 _PANEL_CSS = """
 PromptScreen {
-    align: center middle;
+    align: center bottom;
+    background: $background 0%;
 }
 PromptScreen > Vertical {
-    width: 76;
-    max-width: 90%;
+    width: 100%;
     height: auto;
-    max-height: 80%;
-    border: solid $accent;
+    max-height: 70%;
+    border-top: thick $accent;
     background: $surface;
     padding: 1 2;
 }
@@ -149,6 +156,76 @@ class TextScreen(PromptScreen):
                 self.query_one(".prompt-error", Static).update(Text(error))
                 return
         self.dismiss((event.value, False))
+
+
+class _PathInput(Input):
+    """An Input that un-mangles dropped/pasted paths as they land.
+
+    Dragging a file from Finder (or Terminal's "Copy as Pathname") arrives
+    quoted or backslash-escaped; cleaning it on paste means the box shows
+    the real path immediately instead of `My\\ Movie.mp4`.
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:
+        from ffx.ui.prompts import clean_path_input
+
+        self.insert_text_at_cursor(clean_path_input(event.text).strip())
+        event.stop()
+        event.prevent_default()
+
+
+class PathScreen(TextScreen):
+    """Path entry with a live preview line - drop a file in, see the
+    resolved path (or "doesn't exist") before committing to Enter."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        default: str = "",
+        must_exist: bool = False,
+        hint: str = "",
+        back_enabled: bool = False,
+    ):
+        self._must_exist = must_exist
+        super().__init__(
+            message,
+            default=default,
+            validate=self._check if must_exist else None,
+            hint=hint or "Drag a file from Finder into this window, or type a path.",
+            back_enabled=back_enabled,
+        )
+
+    def _check(self, text: str) -> Optional[str]:
+        from ffx.ui.prompts import clean_path_input
+
+        if not Path(clean_path_input(text)).expanduser().exists():
+            return "That path doesn't exist"
+        return None
+
+    def compose_body(self) -> ComposeResult:
+        yield _PathInput(value=self._default)
+        yield Static("", classes="prompt-path-status")
+        yield Static("", classes="prompt-error")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        from ffx.ui.prompts import clean_path_input
+
+        self.query_one(".prompt-error", Static).update("")
+        status = self.query_one(".prompt-path-status", Static)
+        text = clean_path_input(event.value or "").strip()
+        if not text:
+            status.update("")
+            return
+        path = Path(text).expanduser()
+        if path.is_dir():
+            status.update(Text(f"✓ folder: {path}", style="green"))
+        elif path.exists():
+            status.update(Text(f"✓ {path}", style="green"))
+        elif self._must_exist:
+            status.update(Text(f"✗ no such path: {path}", style="red"))
+        else:
+            status.update(Text(f"will be created: {path}", style="dim"))
 
 
 class ConfirmScreen(PromptScreen):

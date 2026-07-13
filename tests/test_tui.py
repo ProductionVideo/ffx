@@ -9,12 +9,13 @@ import asyncio
 import subprocess
 
 import pytest
+from textual import events
 from textual.app import App
-from textual.widgets import Input, RichLog
+from textual.widgets import Input, ProgressBar, RichLog
 
 from ffx.tui import session
 from ffx.tui.app import FFXApp
-from ffx.tui.screens import ConfirmScreen, PromptScreen, SelectScreen, TextScreen
+from ffx.tui.screens import ConfirmScreen, PathScreen, PromptScreen, SelectScreen, TextScreen
 from ffx.ui import prompts
 from ffx.ui.prompts import TimestampValidator, _validator_fn
 
@@ -89,6 +90,56 @@ def test_confirm_screen_keys():
     assert drive(ConfirmScreen("Sure?", default=True), "enter") == (True, False)
     assert drive(ConfirmScreen("Sure?", default=True), "n") == (False, False)
     assert drive(ConfirmScreen("Sure?", default=False), "y") == (True, False)
+
+
+def test_path_screen_cleans_dropped_path_and_previews(tmp_path):
+    """A Finder drag arrives backslash-escaped; the box should show the
+    real path immediately and dismiss with the escaped text still cleanable."""
+    target = tmp_path / "My Movie.mp4"
+    target.touch()
+    escaped = str(target).replace(" ", "\\ ")
+
+    async def scenario():
+        app = Harness(PathScreen("Path:", must_exist=True))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            box = app.screen.query_one(Input)
+            box._on_paste(events.Paste(escaped))
+            await pilot.pause()
+            shown = box.value
+            await pilot.press("enter")
+            await pilot.pause()
+        return shown, app.result
+
+    shown, result = asyncio.run(scenario())
+    assert shown == str(target)
+    assert result == (str(target), False)
+
+
+def test_path_screen_rejects_missing_path():
+    def set_value(app):
+        app.screen.query_one(Input).value = "/no/such/file.mp4"
+
+    screen = PathScreen("Path:", must_exist=True)
+    assert drive(screen, "enter", before=set_value) is None
+
+
+def test_progress_bar_is_actually_visible():
+    """Regression: the label used to take 1fr and shove the bar off-screen."""
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            handle = session.ProgressHandle(app)
+            app.open_progress("Encoding sample.mp4", 100.0, handle)
+            app.update_progress(42.0)
+            await pilot.pause()
+            return app.query_one("#progress", ProgressBar).region
+
+    bar_region = asyncio.run(scenario())
+    assert bar_region.width >= 20
+    assert bar_region.x + bar_region.width <= 100
 
 
 def test_bridged_prompts_choose_inside_wizard_backs_out():

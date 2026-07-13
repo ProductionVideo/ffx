@@ -85,6 +85,16 @@ class FFXApp(App):
     #progress-row.active {
         display: block;
     }
+    #progress-label {
+        width: auto;
+        margin-right: 2;
+    }
+    #progress {
+        width: 1fr;
+    }
+    #progress Bar {
+        width: 1fr;
+    }
     """
 
     BINDINGS = [

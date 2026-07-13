@@ -149,10 +149,17 @@ def _select_operations(media, caps, ordered_ops=None):
         # session.
         saved_recipes = recipes.list_recipes()
 
-        menu = [
-            (f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}", m.name)
-            for m in CATEGORIES
-        ]
+        menu = []
+        for m in CATEGORIES:
+            label = f"{_CATEGORY_ICON.get(m.name, '▸')} {m.display_name} — {m.description}"
+            # An operation can declare it won't work on this ffmpeg build
+            # (e.g. Text without drawtext) - say so on the menu entry
+            # itself instead of letting the pick silently bounce back.
+            reason_fn = getattr(m, "unavailable_reason", None)
+            reason = reason_fn(caps) if reason_fn else None
+            if reason:
+                label += f"  [unavailable: {reason}]"
+            menu.append((label, m.name))
         menu.append(("◎ Analyse — inspect it, nothing changes", "analyse"))
         if saved_recipes:
             menu.append(("★ Recipes — reuse a saved pipeline", "recipes"))

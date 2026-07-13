@@ -447,15 +447,10 @@ def ask_confirm(message: str, *, default: bool = True, hint: str = "") -> bool:
 
 def ask_existing_path(message: str, *, default: str = "") -> Path:
     def render():
-        from ffx.tui.screens import TextScreen
+        from ffx.tui.screens import PathScreen
 
         routed = _tui_prompt(
-            lambda back: TextScreen(
-                message,
-                default=default,
-                validate=_validator_fn(ExistingPathValidator()),
-                back_enabled=back,
-            )
+            lambda back: PathScreen(message, default=default, must_exist=True, back_enabled=back)
         )
         if routed is not None:
             value, back = routed
@@ -480,9 +475,11 @@ def ask_existing_path(message: str, *, default: str = "") -> Path:
 
 def ask_output_path(message: str, *, default: str = "") -> Path:
     def render():
-        from ffx.tui.screens import TextScreen
+        from ffx.tui.screens import PathScreen
 
-        routed = _tui_prompt(lambda back: TextScreen(message, default=default, back_enabled=back))
+        routed = _tui_prompt(
+            lambda back: PathScreen(message, default=default, must_exist=False, back_enabled=back)
+        )
         if routed is not None:
             value, back = routed
             return clean_path_input(value), back
