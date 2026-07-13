@@ -37,7 +37,7 @@ Plus:
 One command — it sets up everything ffx needs (uv with its own Python, ffx itself, and offers to install ffmpeg via Homebrew if it's missing):
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/GITHUB_USER/ffx/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/ProductionVideo/ffx/main/install.sh | sh
 ```
 
 ffx also re-checks for ffmpeg every launch and walks you through installing it if it's gone.
@@ -48,13 +48,13 @@ ffx also re-checks for ffmpeg every launch and walks you through installing it i
 Requires Python 3.11+ and ffmpeg.
 
 ```sh
-uv tool install --from git+https://github.com/GITHUB_USER/ffx ffx
+uv tool install --from git+https://github.com/ProductionVideo/ffx ffx
 ```
 
 Or from a clone, for development:
 
 ```sh
-git clone https://github.com/GITHUB_USER/ffx && cd ffx
+git clone https://github.com/ProductionVideo/ffx && cd ffx
 uv sync
 uv run ffx
 ```

@@ -5,10 +5,10 @@
 #   * ffmpeg    (offered via Homebrew if missing; ffx also re-checks at launch)
 #
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/GITHUB_USER/ffx/main/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/ProductionVideo/ffx/main/install.sh | sh
 set -eu
 
-REPO_URL="https://github.com/GITHUB_USER/ffx"
+REPO_URL="https://github.com/ProductionVideo/ffx"
 
 say()  { printf '\033[1;36mffx installer:\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33mffx installer:\033[0m %s\n' "$1"; }
