@@ -17,9 +17,12 @@ Operations compose into a pipeline — queue several against one file, or agains
 | **Cut** | Trim to a time range, re-encoded or instant stream copy |
 | **Scale** | Resize by width, height, percentage, or preset |
 | **Crop** | Manual crop or auto-detect black bars (`cropdetect`) |
+| **Thumbnail** | Grab a frame as PNG/JPEG, or an evenly sampled contact-sheet grid |
 | **Orientate** | Rotate / flip |
 | **Colour** | Brightness, contrast, saturation, temperature |
 | **Text** | Burn in text overlays (`drawtext`) |
+| **Caption** | Burn in a subtitle file, or attach it as a selectable track |
+| **Timecode** | Set the start timecode for NLEs, or burn a running TC window |
 | **Composite** | Watermark, stack, side-by-side, chroma key |
 | **Sequence** | Join clips end to end (auto-conformed to the first clip's canvas) |
 | **Time** | Frame rate, speed, loops, freezes; turn a still image into a clip |

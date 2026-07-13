@@ -92,8 +92,9 @@ def _flow(caps) -> None:
 
 
 _CATEGORY_ICON = {
-    "convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "orientate": "⟳", "colour": "◐",
-    "text": "𝐓", "composite": "⧉", "sequence": "⋯", "time": "◷", "sound": "♪", "metadata": "▤", "repair": "✚",
+    "convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "thumbnail": "◫", "orientate": "⟳",
+    "colour": "◐", "text": "𝐓", "caption": "¶", "timecode": "◔", "composite": "⧉", "sequence": "⋯",
+    "time": "◷", "sound": "♪", "metadata": "▤", "repair": "✚",
 }
 
 
