@@ -27,7 +27,21 @@ PRESETS = [
 ]
 
 
+def is_still_image(media: MediaInfo) -> bool:
+    """A single still (png/jpeg/etc.) rather than a movie - ffprobe reports
+    these as *_pipe or image2 demuxers with no meaningful duration."""
+    fmt = (media.format_name or "").lower()
+    return ("image2" in fmt or fmt.endswith("_pipe")) and media.primary_audio is None
+
+
 def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
+    if is_still_image(media):
+        # The only Time question that makes sense for a still: how long a
+        # clip to loop it into. (Queue Convert after it to pick the codec.)
+        seconds = prompts.ask_float("Clip length (seconds):", default=5.0, min_allowed=0.1)
+        fps = prompts.ask_int("Frame rate:", default=30, min_allowed=1, max_allowed=240)
+        return {"mode": "still", "seconds": seconds, "fps": fps}
+
     preset = prompts.choose_preset(PRESETS, message="Time — choose a preset:")
     if preset is not None:
         return dict(preset.values)
@@ -82,8 +96,26 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
         return _build_loop(params)
     if mode == "freeze":
         return _build_freeze(params, media)
+    if mode == "still":
+        return _build_still(params)
 
     raise ValueError(f"unknown time mode: {mode}")
+
+
+def _build_still(params: dict) -> OperationSettings:
+    seconds = params.get("seconds", 5.0)
+    fps = params.get("fps", 30)
+    return OperationSettings(
+        name=name,
+        display_name=display_name,
+        description=f"Still image → {seconds:g}s clip at {fps}fps",
+        args_before_input=["-loop", "1"],
+        # Even dimensions and yuv420p: what H.264/HEVC encoders and every
+        # player expect - stills are frequently odd-sized RGB.
+        video_filter=["scale=trunc(iw/2)*2:trunc(ih/2)*2", "format=yuv420p"],
+        output_args=["-t", str(seconds), "-r", str(fps)],
+        serializable={},
+    )
 
 
 def _build_framerate(params: dict) -> OperationSettings:

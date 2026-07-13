@@ -13,7 +13,7 @@ Operations compose into a pipeline — queue several against one file, or agains
 
 | Operation | What it does |
 |---|---|
-| **Convert** | Swap codec/container: H.264, HEVC, AV1, VP9, ProRes, DNxHR, MPEG-2, or stream copy. Quality tiers with estimated output sizes, exact target-size mode, optional 2-pass |
+| **Convert** | Swap codec/container: H.264, HEVC, AV1, VP9, ProRes, DNxHR, HAP, MPEG-2, or stream copy. Quality tiers with estimated output sizes, exact target-size mode, optional 2-pass |
 | **Cut** | Trim to a time range, re-encoded or instant stream copy |
 | **Scale** | Resize by width, height, percentage, or preset |
 | **Crop** | Manual crop or auto-detect black bars (`cropdetect`) |
@@ -21,8 +21,9 @@ Operations compose into a pipeline — queue several against one file, or agains
 | **Colour** | Brightness, contrast, saturation, temperature |
 | **Text** | Burn in text overlays (`drawtext`) |
 | **Composite** | Watermark, stack, side-by-side, chroma key |
-| **Time** | Speed up, slow down, reverse |
-| **Sound** | Adjust volume, normalize, strip or extract audio |
+| **Sequence** | Join clips end to end (auto-conformed to the first clip's canvas) |
+| **Time** | Frame rate, speed, loops, freezes; turn a still image into a clip |
+| **Sound** | Volume, normalize, strip/extract audio; replace or mix in another audio file |
 | **Metadata** | View / edit container tags |
 | **Repair** | Tolerant remux for broken files |
 | **Analyse** | Inspect a file; QC scans for black frames, silence, and freezes |

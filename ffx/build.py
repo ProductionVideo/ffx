@@ -65,12 +65,25 @@ def build_argv(job: FFmpegJob) -> list[str]:
         if af_parts:
             argv.extend(["-af", ",".join(af_parts)])
 
-    for op in job.operations:
-        argv.extend(op.output_args)
-        argv.extend(op.non_video_output_args)
+    for i, op in enumerate(job.operations):
+        # "{inN}" placeholders are valid in output args too, not just
+        # filter_complex - e.g. Sound's replace mode maps an extra audio
+        # input ("-map {in0}:a") without needing a filter graph.
+        indices = extra_indices.get(i, [])
+        argv.extend(_resolve_placeholders(op.output_args, indices))
+        argv.extend(_resolve_placeholders(op.non_video_output_args, indices))
 
     argv.append(str(job.output.path))
     return argv
+
+
+def _resolve_placeholders(args: list[str], indices: list[int]) -> list[str]:
+    resolved = []
+    for arg in args:
+        for slot, index in enumerate(indices):
+            arg = arg.replace(f"{{in{slot}}}", str(index))
+        resolved.append(arg)
+    return resolved
 
 
 def needs_two_pass(job: FFmpegJob) -> bool:

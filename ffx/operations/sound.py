@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings, Preset
 from ffx.ui import prompts
 
@@ -41,6 +43,8 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         [
             ("Extract audio (drop the video)", "extract"),
             ("Remove audio (mute)", "mute"),
+            ("Replace the audio with another file", "replace"),
+            ("Mix in another audio file (music bed, VO)", "mix"),
             ("Channels — mono/stereo/swap/select", "channels"),
             ("Volume, normalize, compress, or limit", "volume"),
             ("Fade in/out", "fade"),
@@ -61,6 +65,26 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
 
     if mode == "mute":
         return {"mode": "mute"}
+
+    if mode == "replace":
+        path = prompts.ask_existing_path("Path to the new audio file:")
+        codec = prompts.choose(
+            "Audio codec for the result:",
+            [("AAC — safe everywhere", "aac"), ("Copy the file's codec as-is", "copy")],
+            default="aac",
+        )
+        return {"mode": "replace", "path": str(path), "codec": codec}
+
+    if mode == "mix":
+        path = prompts.ask_existing_path("Path to the audio to mix in:")
+        level = prompts.ask_float(
+            "Mixed-in volume (0-1):",
+            default=0.4,
+            min_allowed=0.05,
+            max_allowed=1.0,
+            hint="How loud the added track sits under the original audio.",
+        )
+        return {"mode": "mix", "path": str(path), "level": level}
 
     if mode == "channels":
         action = prompts.choose(
@@ -160,7 +184,53 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
         return _build_delay(params)
     if mode == "tracks":
         return _build_tracks(params, media)
+    if mode == "replace":
+        return _build_replace(params)
+    if mode == "mix":
+        return _build_mix(params)
     raise ValueError(f"unknown sound mode: {mode}")
+
+
+def _build_replace(params: dict) -> OperationSettings:
+    path = Path(params["path"])
+    # Everything lives in non_video_output_args: the maps are pure
+    # audio/mux concerns, and a 2-pass encode's video-only analysis pass
+    # must not see "-map {in0}:a" (its extra input isn't added there).
+    args = ["-map", "0:v?", "-map", "{in0}:a", "-shortest"]
+    if params.get("codec") == "copy":
+        args += ["-c:a", "copy"]
+    else:
+        args += ["-c:a", "aac", "-b:a", "192k"]
+    return OperationSettings(
+        name=name,
+        display_name=display_name,
+        description=f"Replace audio with {path.name}",
+        extra_inputs=[path],
+        extra_input_args=[[]],
+        non_video_output_args=args,
+        serializable={},
+    )
+
+
+def _build_mix(params: dict) -> OperationSettings:
+    path = Path(params["path"])
+    level = params.get("level", 0.4)
+    # duration=first: the video keeps its own length; a longer music bed
+    # is trimmed, a shorter one just ends (dropout_transition smooths it).
+    fc = (
+        f"[{{in0}}:a]volume={level}[mixin];"
+        "[0:a][mixin]amix=inputs=2:duration=first:dropout_transition=2[outa]"
+    )
+    return OperationSettings(
+        name=name,
+        display_name=display_name,
+        description=f"Mix in {path.name} at {level:.0%}",
+        extra_inputs=[path],
+        extra_input_args=[[]],
+        filter_complex=fc,
+        output_args=["-map", "0:v?", "-map", "[outa]"],
+        serializable={},
+    )
 
 
 def _build_extract(params: dict) -> OperationSettings:

@@ -30,6 +30,7 @@ CATEGORY_COLORS = {
     "colour": "#ff5fd7",
     "text": "#5fffd7",
     "composite": "#af5fff",
+    "sequence": "#87d75f",
     "time": "#ffd75f",
     "sound": "#5fd787",
     "metadata": "#5f87ff",
