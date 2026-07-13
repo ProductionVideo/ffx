@@ -8,6 +8,12 @@ from ffx.models import HardwareCapabilities
 
 _HWACCEL_ENCODER_RE = re.compile(r"^\s*V[A-Z.]*\s+(\S+_videotoolbox)\s", re.MULTILINE)
 
+# Every encoder row of `ffmpeg -encoders`: " V....D hap  Vidvox Hap" - a
+# 6-character flags column starting V(ideo)/A(udio)/S(ubtitle), then the
+# encoder name. Compile-time-optional encoders (hap needs libsnappy) just
+# aren't listed on builds without the library.
+_ENCODER_RE = re.compile(r"^\s*[VAS][A-Z.]{5}\s+(\S+)\s", re.MULTILINE)
+
 # `ffmpeg -filters` rows look like " T.. drawtext           V->V   Draw text ...":
 # a flags column (T/S/C or '.'), the filter name, then an I/O spec containing
 # "->". Some ffmpeg builds (notably Homebrew's default, non-"full" formula)
@@ -48,12 +54,14 @@ def detect() -> HardwareCapabilities:
     videotoolbox_available = "videotoolbox" in hwaccels_out
     hw_decoders = set(_KNOWN_VIDEOTOOLBOX_DECODE_CODECS) if videotoolbox_available else set()
     filters = {m.group(1) for m in _FILTER_RE.finditer(filters_out)}
+    encoders = {m.group(1) for m in _ENCODER_RE.finditer(encoders_out)}
 
     return HardwareCapabilities(
         videotoolbox_available=videotoolbox_available,
         hw_encoders=hw_encoders,
         hw_decoders=hw_decoders,
         filters=filters,
+        encoders=encoders,
     )
 
 

@@ -51,12 +51,14 @@ _DEFAULT_CONTAINER = {
     "vp9": "webm",
     "prores": "mov",
     "dnxhr": "mov",
+    "hap": "mov",
     "mpeg2": "mov",
     "copy_v": "mp4",
 }
 _DEFAULT_AUDIO = {
     "prores": "pcm",
     "dnxhr": "pcm",
+    "hap": "pcm",
 }
 
 # Which containers ffmpeg can actually mux each codec into on this build -
@@ -70,6 +72,10 @@ _CONTAINER_COMPAT = {
     "vp9": {"mp4", "mkv", "webm", "avi"},
     "prores": {"mov", "mkv", "avi", "mxf"},
     "dnxhr": {"mov", "mkv", "avi", "mxf"},
+    # MOV only: it's what every HAP-playing app (Resolume, TouchDesigner,
+    # Millumin) actually reads - not verified wider on this build because
+    # the local ffmpeg can't encode HAP at all.
+    "hap": {"mov"},
     "mpeg2": {"mp4", "mov", "mkv", "avi", "ts", "mxf"},
 }
 # Normalize ffprobe's codec_name to the keys above, for filtering the
@@ -106,6 +112,28 @@ _DNXHR_KBPS_1080P30 = {
     "dnxhr_444": 365_000,
 }
 
+# HAP (Vidvox) - GPU-decoded DXT textures for VJ/media-server playback
+# (Resolume, TouchDesigner, Millumin). Quality is fixed by the flavour,
+# like ProRes profiles; the ecosystem expects .mov. Rough data rates at
+# 1920x1080/30fps: DXT1 is 0.5 byte/px (Hap), DXT5 1 byte/px (Alpha/Q),
+# snappy then shaves roughly a third - shown only as ballpark sizes.
+_HAP_FORMATS = [
+    ("Hap — standard, lightest to play back", "hap"),
+    ("Hap Alpha — carries transparency", "hap_alpha"),
+    ("Hap Q — higher quality, larger", "hap_q"),
+]
+_HAP_KBPS_1080P30 = {"hap": 150_000, "hap_alpha": 300_000, "hap_q": 300_000}
+
+
+def hap_unavailable_reason(hardware: HardwareCapabilities) -> str | None:
+    """The hap encoder is compile-time optional (needs libsnappy) and
+    missing from Homebrew's default ffmpeg formula - same situation as
+    Text's drawtext, surfaced on the menu entry the same way."""
+    if hardware.encoders and not hardware.can_encode("hap"):
+        return "this ffmpeg can't encode HAP — brew install ffmpeg-full"
+    return None
+
+
 _CONTAINER_LABELS = [
     ("MP4", "mp4"),
     ("MOV", "mov"),
@@ -127,11 +155,13 @@ _AUDIO_CODECS = {
 }
 
 
-def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
+def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict | None:
     # Codec first, then everything else defaults sensibly around it (right
     # container, right audio codec, right engine/profile) so switching
     # codec is the one real decision - every other prompt is an Enter to
     # accept the default, or an arrow-key away from overriding it.
+    hap_reason = hap_unavailable_reason(hardware)
+    hap_label = "HAP (VJ / media servers)" + (f"  [unavailable: {hap_reason}]" if hap_reason else "")
     vcodec = prompts.choose(
         "Video codec:",
         [
@@ -141,11 +171,19 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             ("VP9", "vp9"),
             ("ProRes", "prores"),
             ("DNxHR (Avid)", "dnxhr"),
+            (hap_label, "hap"),
             ("MPEG-2", "mpeg2"),
             ("Copy (no re-encode)", "copy_v"),
         ],
         default="h264",
     )
+    if vcodec == "hap" and hap_reason:
+        console.print(
+            "This ffmpeg build can't encode HAP (the encoder needs libsnappy). "
+            "`brew install ffmpeg-full` includes it.",
+            style="ffx.error",
+        )
+        return None
     compat_key = _compat_key_for(vcodec, media)
     compatible_containers = _CONTAINER_COMPAT.get(compat_key)
     container_choices = (
@@ -196,6 +234,12 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
             "DNxHR profile:",
             _profile_choices(_DNXHR_PROFILES, _DNXHR_KBPS_1080P30, media),
             default="dnxhr_hq",
+        )
+    elif vcodec == "hap":
+        params["hap_format"] = prompts.choose(
+            "HAP flavour:",
+            _profile_choices(_HAP_FORMATS, _HAP_KBPS_1080P30, media),
+            default="hap",
         )
     else:
         engine = _choose_engine(vcodec, hardware)
@@ -312,10 +356,20 @@ def _choose_quality(
 
 def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> OperationSettings:
     output_args: list[str] = []
+    video_filter: list[str] = []
     vcodec = params.get("vcodec")
 
     if vcodec == "copy_v":
         output_args += ["-c:v", "copy"]
+    elif vcodec == "hap":
+        # -chunks 8: split each frame's texture for parallel snappy decode
+        # on playback (the whole point of HAP is cheap playback).
+        output_args += ["-c:v", "hap", "-format", params.get("hap_format", "hap"), "-chunks", "8"]
+        video = media.primary_video
+        if video and video.width and video.height and (video.width % 4 or video.height % 4):
+            # DXT compresses in 4x4 texel blocks - snap odd dimensions down
+            # to the nearest multiple of 4 rather than let the encode fail.
+            video_filter.append("scale=trunc(iw/4)*4:trunc(ih/4)*4")
     elif vcodec == "prores":
         engine = params.get("engine", "software")
         encoder = "prores_videotoolbox" if engine == "hardware" else "prores_ks"
@@ -350,6 +404,7 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
         name=name,
         display_name=display_name,
         description=description,
+        video_filter=video_filter,
         output_args=output_args,
         non_video_output_args=non_video_output_args,
         two_pass=bool(params.get("two_pass", False)),

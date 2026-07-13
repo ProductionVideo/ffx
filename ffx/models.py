@@ -92,9 +92,16 @@ class HardwareCapabilities:
     hw_encoders: set[str]
     hw_decoders: set[str]
     filters: set[str] = field(default_factory=set)
+    # Every encoder this ffmpeg build ships, not just hardware ones - some
+    # encoders (hap needs libsnappy, libx265 needs x265) are compile-time
+    # optional, so their menu entries have to check before offering.
+    encoders: set[str] = field(default_factory=set)
 
     def has_encoder(self, codec: str) -> bool:
         return codec in self.hw_encoders
+
+    def can_encode(self, name: str) -> bool:
+        return name in self.encoders
 
     def has_filter(self, name: str) -> bool:
         return name in self.filters
