@@ -34,19 +34,31 @@ Plus:
 
 ## Install
 
-Requires Python 3.11+ and ffmpeg. If ffmpeg is missing, ffx will notice at launch and offer to install it via Homebrew.
+One command — it sets up everything ffx needs (uv with its own Python, ffx itself, and offers to install ffmpeg via Homebrew if it's missing):
 
 ```sh
-git clone <this repo> && cd ffx
+curl -LsSf https://raw.githubusercontent.com/GITHUB_USER/ffx/main/install.sh | sh
+```
+
+ffx also re-checks for ffmpeg every launch and walks you through installing it if it's gone.
+
+<details>
+<summary>Manual install</summary>
+
+Requires Python 3.11+ and ffmpeg.
+
+```sh
+uv tool install --from git+https://github.com/GITHUB_USER/ffx ffx
+```
+
+Or from a clone, for development:
+
+```sh
+git clone https://github.com/GITHUB_USER/ffx && cd ffx
 uv sync
 uv run ffx
 ```
-
-Or install it as a tool so `ffx` is on your PATH:
-
-```sh
-uv tool install .
-```
+</details>
 
 > **Platform note:** ffx is developed macOS-first. Everything works on Linux, but hardware encoding (VideoToolbox) and the Homebrew install offer are macOS-only.
 
