@@ -5,7 +5,16 @@ import subprocess
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+
+from ffx.ui.theme import FFX_THEME
 
 
 class FFmpegRunError(RuntimeError):
@@ -32,7 +41,7 @@ def run(argv: list[str], *, total_duration: float, console: Console | None = Non
     FFmpegCancelled instead of letting a raw KeyboardInterrupt traceback
     reach the user.
     """
-    console = console or Console()
+    console = console or Console(theme=FFX_THEME)
     progress_argv = [*argv[:-1], "-progress", "pipe:1", "-nostats", argv[-1]]
     output_path = Path(argv[-1])
 
@@ -49,9 +58,10 @@ def run(argv: list[str], *, total_duration: float, console: Console | None = Non
 
     try:
         with Progress(
+            SpinnerColumn(style="ffx.accent"),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.percentage:>3.0f}%"),
+            BarColumn(complete_style="ffx.accent", finished_style="ffx.ok"),
+            TextColumn("[ffx.accent]{task.percentage:>3.0f}%[/ffx.accent]"),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
             console=console,
