@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from ffx.operations import convert, crop, cut, scale
+from ffx.operations import convert, crop, cut, scale, sound, time
 
-CATEGORIES = [convert, cut, scale, crop]
+CATEGORIES = [convert, cut, scale, crop, time, sound]
 
 _BY_NAME = {module.name: module for module in CATEGORIES}
 

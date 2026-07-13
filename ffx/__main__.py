@@ -44,7 +44,7 @@ def main() -> None:
         sys.exit(130)
 
 
-_CATEGORY_ICON = {"convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣"}
+_CATEGORY_ICON = {"convert": "⇄", "cut": "✂", "scale": "⤢", "crop": "▣", "time": "◷", "sound": "♪"}
 
 
 def _select_inputs() -> list[Path]:
@@ -176,20 +176,30 @@ def _select_output(first_input: Path, ordered_ops) -> tuple[Path, str]:
 
 
 def _output_extension(ordered_ops, source_ext: str) -> str:
+    # Any op can override the output container (Convert always does;
+    # Sound does when extracting audio-only) by exposing an
+    # output_extension(params) -> str | None; later ops win.
     for module, params in reversed(ordered_ops):
-        if module.name == "convert":
-            return "." + module.output_extension(params)
+        ext_fn = getattr(module, "output_extension", None)
+        if ext_fn:
+            ext = ext_fn(params)
+            if ext:
+                return "." + ext.lstrip(".")
     return source_ext
 
 
 def _has_stream_copy_conflict(ordered_ops) -> bool:
-    # Cheap heuristic for the pre-flight warning below; cut.py is the
-    # only Phase 1 op that can emit "-c copy" (stream copy), which can't
-    # be combined with any op needing a filter/re-encode.
+    # Cheap heuristics for the pre-flight warning below: cut.py's fast
+    # mode ("-c copy") and sound.py's extract mode ("-vn", no video
+    # stream) each can't be combined with another op that needs a
+    # video filter/re-encode.
     has_copy_cut = any(
         module.name == "cut" and not params.get("reencode", True) for module, params in ordered_ops
     )
-    return has_copy_cut and len(ordered_ops) > 1
+    has_audio_only_extract = any(
+        module.name == "sound" and params.get("mode") == "extract" for module, params in ordered_ops
+    )
+    return (has_copy_cut or has_audio_only_extract) and len(ordered_ops) > 1
 
 
 def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
@@ -198,8 +208,8 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> None:
 
     if _has_stream_copy_conflict(ordered_ops):
         console.print(
-            "Warning: combining a no-re-encode cut with another operation that needs "
-            "filtering/re-encoding will likely fail in ffmpeg (stream copy can't be filtered).",
+            "Heads up: a no-re-encode cut or an audio-only extract combined with another "
+            "video-affecting operation will likely conflict in ffmpeg.",
             style="ffx.warn",
         )
 
