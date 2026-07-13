@@ -70,7 +70,7 @@ def _show_input_feedback(inputs: list[Path], representative: MediaInfo) -> None:
     rather than after building a whole command around it.
     """
     title = representative.path.name if len(inputs) == 1 else f"{representative.path.name} (+ {len(inputs) - 1} more)"
-    table = Table(title=title, show_header=False, box=box.SIMPLE, border_style="ffx.muted")
+    table = Table(title=title, show_header=False, box=box.ROUNDED, border_style="ffx.accent")
     table.add_column("Property", style="ffx.muted")
     table.add_column("Value", style="bold")
     for key, value in summary_rows(representative):
@@ -125,13 +125,13 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
         icon = _CATEGORY_ICON.get(module.name, "▸")
         lines.append(f"[ffx.ok]{i}.[/ffx.ok] {icon} [bold]{module.display_name}[/bold]  {op.description}")
     console.print(
-        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.muted", box=box.ROUNDED)
+        Panel("\n".join(lines), title="Pipeline", title_align="left", border_style="ffx.accent", box=box.ROUNDED)
     )
 
 
 def _run_analyse(media) -> None:
     params = analyse_prompt()
-    table = Table(title=f"Analysis: {media.path.name}", box=box.SIMPLE, border_style="ffx.muted")
+    table = Table(title=f"Analysis: {media.path.name}", box=box.ROUNDED, border_style="ffx.accent")
     table.add_column("Property", style="ffx.muted")
     table.add_column("Value", style="bold")
     for key, value in summary_rows(media):

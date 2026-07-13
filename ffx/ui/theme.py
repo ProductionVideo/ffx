@@ -3,14 +3,14 @@ from __future__ import annotations
 from InquirerPy import get_style
 from rich.console import Console
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.theme import Theme
 from rich import box
 
-# Accent reserved for things you actively interact with (InquirerPy
-# prompts, the banner) - everything else leans on weight/box-drawing
-# rather than color, so color stays meaningful instead of blanketing
-# every line the same hue.
+# One accent, used for exactly two jobs: things you interact with
+# (InquirerPy prompts) and the border/badge of things that frame
+# information (banner, step badges, data tables). It never colors body
+# text - that stays plain bold, so the accent reads as a deliberate
+# frame instead of a wash over everything.
 _ACCENT = "#00afff"
 
 FFX_THEME = Theme(
@@ -55,5 +55,12 @@ def print_banner() -> None:
 
 
 def print_step(number: int, total: int, title: str) -> None:
+    # A solid colored badge (same reverse-video move as the banner's "ffx"
+    # chip) gives the eye one clear anchor per step, instead of a long
+    # thin rule that reads as a flat gray wash across the terminal width.
+    # A bare attribute keyword (reverse) combined with a custom theme name
+    # in one tag silently produces no style at all in Rich - confirmed by
+    # testing, not assumed - so this uses the raw accent hex directly
+    # rather than the "ffx.accent" theme name.
     console.print()
-    console.print(Rule(f"[bold]Step {number}/{total}[/bold]  {title}", characters="━", style="ffx.muted", align="left"))
+    console.print(f"[reverse bold {_ACCENT}] {number}/{total} [/] [bold]{title}[/]", highlight=False)
