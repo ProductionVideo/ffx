@@ -8,7 +8,7 @@ from typing import Optional
 from rich.console import Console
 
 from ffx import presets as preset_calc
-from ffx.models import MediaInfo, Preset
+from ffx.models import MediaInfo, Preset, StreamInfo
 from ffx.runner import FFmpegCancelled, run_with_output
 from ffx.ui import prompts
 
@@ -21,13 +21,26 @@ _SILENCE_START_RE = re.compile(r"silence_start:\s*([\d.]+)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)")
 _FREEZE_START_RE = re.compile(r"lavfi\.freezedetect\.freeze_start:\s*([\d.]+)")
 _FREEZE_END_RE = re.compile(r"lavfi\.freezedetect\.freeze_end:\s*([\d.]+)")
+_FREEZE_DURATION_RE = re.compile(r"lavfi\.freezedetect\.freeze_duration:\s*([\d.]+)")
+
+# "Streams & chapters" is synthesized straight from the already-probed
+# MediaInfo (no ffmpeg call), so it's instant - grouped with the other
+# checks anyway since it's the one genuinely new thing Analyse can show
+# beyond what's already visible the moment a file is picked (every audio/
+# subtitle track, language, default/forced flags, chapter markers - not
+# just the primary streams summary_rows() shows).
+_CHECK_CHOICES = [
+    ("Streams & chapters — every track, language, default/forced flags", "streams"),
+    ("Black sections", "black"),
+    ("Silent sections", "silence"),
+    ("Frozen (static) sections", "freeze"),
+]
 
 PRESETS = [
-    Preset("Quick summary", "Format, codecs, resolution, framerate, duration", {"checks": []}),
     Preset(
         "Full QC report",
-        "Quick summary plus black/silent/frozen section detection",
-        {"checks": ["black", "silence", "freeze"]},
+        "Every stream/chapter plus black/silent/frozen section detection",
+        {"checks": ["streams", "black", "silence", "freeze"]},
     ),
 ]
 
@@ -35,12 +48,15 @@ PRESETS = [
 @dataclass
 class QCFindings:
     black_sections: list[tuple[float, float, float]] = field(default_factory=list)
-    # end/duration are None when the silence runs through end-of-stream,
-    # since ffmpeg only logs silence_end when silence actually stops.
+    # end/duration are None when the section runs through end-of-stream,
+    # since ffmpeg only logs an "_end" event when the condition actually
+    # stops before EOF.
     silence_sections: list[tuple[float, Optional[float], Optional[float]]] = field(
         default_factory=list
     )
-    freeze_starts: list[float] = field(default_factory=list)
+    freeze_sections: list[tuple[float, Optional[float], Optional[float]]] = field(
+        default_factory=list
+    )
 
 
 def prompt() -> dict:
@@ -49,17 +65,13 @@ def prompt() -> dict:
         return dict(preset.values)
     checks = prompts.multi_choose(
         "Which checks? (space to toggle, enter to confirm)",
-        [
-            ("Black sections", "black"),
-            ("Silent sections", "silence"),
-            ("Frozen (static) sections", "freeze"),
-        ],
-        defaults=["black", "silence"],
+        _CHECK_CHOICES,
+        defaults=["streams", "black", "silence"],
     )
     return {"checks": checks}
 
 
-def _humanize_duration(seconds: float) -> str:
+def humanize_duration(seconds: float) -> str:
     seconds = int(seconds)
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
@@ -72,7 +84,7 @@ def summary_rows(media: MediaInfo) -> list[tuple[str, str]]:
     rows = [
         ("File", str(media.path)),
         ("Format", media.format_long_name or media.format_name),
-        ("Duration", _humanize_duration(media.duration)),
+        ("Duration", humanize_duration(media.duration)),
         ("Size", preset_calc.humanize_size(media.size / 1024 / 1024)),
         ("Overall bitrate", f"{media.bit_rate // 1000} kbps" if media.bit_rate else "-"),
     ]
@@ -120,8 +132,50 @@ def run_qc(path: Path, checks: list[str], duration: float = 0.0, console: Option
             path, duration, console, "Checking for frozen sections",
             vf="freezedetect=n=-60dB:d=0.5", drop_audio=True,
         )
-        findings.freeze_starts = [float(s) for s in _FREEZE_START_RE.findall(stderr)]
+        starts = [float(s) for s in _FREEZE_START_RE.findall(stderr)]
+        ends = [float(e) for e in _FREEZE_END_RE.findall(stderr)]
+        durations = [float(d) for d in _FREEZE_DURATION_RE.findall(stderr)]
+        for i, start in enumerate(starts):
+            end = ends[i] if i < len(ends) else None
+            dur = durations[i] if i < len(durations) else None
+            findings.freeze_sections.append((start, end, dur))
     return findings
+
+
+def section_stats(
+    sections: list[tuple], duration: float
+) -> tuple[int, float, float]:
+    """(count, total affected seconds, percent of runtime) for a list of
+    (start, end, ...) tuples - end is None for a section still running at
+    end-of-stream, which counts through the clip's own duration."""
+    count = len(sections)
+    total = sum((end if end is not None else duration) - start for start, end, *_ in sections)
+    percent = (total / duration * 100) if duration > 0 else 0.0
+    return count, total, percent
+
+
+def streams_rows(media: MediaInfo) -> list[tuple]:
+    """(index, type, codec, language, flags, title) per stream - every
+    stream, not just the primary video/audio pair summary_rows() shows."""
+    rows = []
+    for s in media.streams:
+        flags = ", ".join(f for f, on in (("default", s.is_default), ("forced", s.is_forced)) if on)
+        title = s.tags.get("title", "")
+        detail = _stream_detail(s)
+        rows.append((s.index, s.codec_type, detail, s.language or "-", flags or "-", title or "-"))
+    return rows
+
+
+def _stream_detail(s: StreamInfo) -> str:
+    if s.is_video:
+        return f"{s.codec_name}, {s.width}x{s.height}" if s.width else s.codec_name
+    if s.is_audio:
+        return f"{s.codec_name}, {s.channel_layout}" if s.channel_layout else s.codec_name
+    return s.codec_name
+
+
+def chapter_rows(media: MediaInfo) -> list[tuple[int, float, float, str]]:
+    return [(c.index, c.start, c.end, c.title or "-") for c in media.chapters]
 
 
 def _run_filter(

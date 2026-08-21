@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from ffx.models import MediaInfo, StreamInfo
+from ffx.models import Chapter, MediaInfo, StreamInfo
 
 
 class ProbeError(RuntimeError):
@@ -21,6 +21,7 @@ def probe(path: Path) -> MediaInfo:
         "json",
         "-show_format",
         "-show_streams",
+        "-show_chapters",
         str(path),
     ]
     try:
@@ -42,6 +43,7 @@ def probe(path: Path) -> MediaInfo:
 def _parse(path: Path, data: dict) -> MediaInfo:
     fmt = data.get("format", {})
     streams = [_parse_stream(s) for s in data.get("streams", [])]
+    chapters = [_parse_chapter(c) for c in data.get("chapters", [])]
 
     return MediaInfo(
         path=path,
@@ -52,6 +54,16 @@ def _parse(path: Path, data: dict) -> MediaInfo:
         bit_rate=_to_int(fmt.get("bit_rate")) or 0,
         streams=streams,
         tags=fmt.get("tags", {}),
+        chapters=chapters,
+    )
+
+
+def _parse_chapter(c: dict) -> Chapter:
+    return Chapter(
+        index=_to_int(c.get("id")) or 0,
+        start=_to_float(c.get("start_time")) or 0.0,
+        end=_to_float(c.get("end_time")) or 0.0,
+        title=c.get("tags", {}).get("title", ""),
     )
 
 
@@ -77,6 +89,7 @@ def _parse_stream(s: dict) -> StreamInfo:
         bit_rate=_to_int(s.get("bit_rate")),
         duration=_to_float(s.get("duration")),
         tags=s.get("tags", {}),
+        disposition=s.get("disposition", {}),
     )
 
 

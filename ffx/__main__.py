@@ -11,7 +11,7 @@ from rich.table import Table
 
 from ffx import hardware, preflight, presets as preset_calc, probe, recipes
 from ffx.tui import session as tui_session
-from ffx.analyse import run_qc, summary_rows
+from ffx.analyse import chapter_rows, humanize_duration, run_qc, section_stats, streams_rows, summary_rows
 from ffx.analyse import prompt as analyse_prompt
 from ffx.build import build_argv, build_two_pass_argvs, needs_two_pass
 from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
@@ -225,36 +225,85 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
 
 
 def _run_analyse(media) -> None:
+    # No reprint of the summary_rows() table here - it's already on
+    # screen (the Media pane in the app, or the feedback table printed
+    # the moment the file was picked in the classic wizard), so showing
+    # it again on every Analyse run was pure duplication. Analyse now
+    # only ever prints things that table doesn't already have.
     params = prompts.run_wizard(analyse_prompt)
-    if params is None:
+    if params is None or not params["checks"]:
         return
-    table = Table(title=f"Analysis: {media.path.name}", box=box.SQUARE, border_style="ffx.border")
-    table.add_column("Property", style="ffx.muted")
-    table.add_column("Value")
-    for key, value in summary_rows(media):
-        _add_field_row(table, key, value)
+    checks = params["checks"]
+
+    if "streams" in checks:
+        _print_streams(media)
+
+    qc_checks = [c for c in checks if c in ("black", "silence", "freeze")]
+    if not qc_checks:
+        return
+    findings = run_qc(media.path, qc_checks, media.duration, console)
+    if "black" in qc_checks:
+        _print_qc_table("Black sections", findings.black_sections, media.duration)
+    if "silence" in qc_checks:
+        _print_qc_table("Silent sections", findings.silence_sections, media.duration)
+    if "freeze" in qc_checks:
+        _print_qc_table("Frozen sections", findings.freeze_sections, media.duration)
+
+    # The next thing shown is the (long) operations menu, which would
+    # otherwise slam over these results the instant they're printed -
+    # this gate gives a beat to actually read them, and points at the
+    # scroll shortcut for a proper look back.
+    prompts.ask_confirm(
+        "Back to the pipeline?",
+        default=True,
+        hint="Ctrl+B/Ctrl+F scrolls the log first if you want another look.",
+    )
+
+
+def _print_streams(media) -> None:
+    table = Table(title="Streams", box=box.SQUARE, border_style="ffx.border")
+    table.add_column("#", style="ffx.muted", justify="right")
+    table.add_column("Type")
+    table.add_column("Codec")
+    table.add_column("Lang")
+    table.add_column("Flags")
+    table.add_column("Title")
+    for index, kind, detail, lang, flags, title in streams_rows(media):
+        table.add_row(str(index), kind, detail, lang, flags, title)
     console.print(table)
 
-    if params["checks"]:
-        findings = run_qc(media.path, params["checks"], media.duration, console)
-        if "black" in params["checks"]:
-            _print_findings("Black sections", findings.black_sections, "start={0:.2f}s end={1:.2f}s dur={2:.2f}s")
-        if "silence" in params["checks"]:
-            _print_findings("Silent sections", findings.silence_sections, "start={0:.2f}s end={1} dur={2}")
-        if "freeze" in params["checks"]:
-            for s in findings.freeze_starts:
-                console.print(f"  Frozen section starting at {s:.2f}s")
-            if not findings.freeze_starts:
-                console.print("  No frozen sections detected", style="ffx.muted")
-
-
-def _print_findings(title: str, sections: list, fmt: str) -> None:
-    console.print(f"[bold]{title}:[/bold]")
-    if not sections:
-        console.print("  None detected", style="ffx.muted")
+    if not media.chapters:
         return
-    for section in sections:
-        console.print("  " + fmt.format(*section))
+    chapters = Table(title="Chapters", box=box.SQUARE, border_style="ffx.border")
+    chapters.add_column("#", style="ffx.muted", justify="right")
+    chapters.add_column("Start")
+    chapters.add_column("End")
+    chapters.add_column("Title")
+    for index, start, end, title in chapter_rows(media):
+        chapters.add_row(str(index), humanize_duration(start), humanize_duration(end), title)
+    console.print(chapters)
+
+
+def _print_qc_table(title: str, sections: list[tuple], duration: float) -> None:
+    if not sections:
+        console.print(f"[bold]{title}[/bold]  [ffx.ok]none detected[/ffx.ok]")
+        return
+    count, total, percent = section_stats(sections, duration)
+    table = Table(
+        title=f"{title} — {count} section{'s' if count != 1 else ''}, "
+        f"{total:.1f}s total ({percent:.1f}% of runtime)",
+        title_style="ffx.warn",
+        box=box.SQUARE,
+        border_style="ffx.warn",
+    )
+    table.add_column("Start", style="ffx.muted")
+    table.add_column("End")
+    table.add_column("Duration")
+    for start, end, dur in sections:
+        end_str = f"{end:.2f}s" if end is not None else "(runs to end of clip)"
+        dur_str = f"{dur:.2f}s" if dur is not None else "-"
+        table.add_row(f"{start:.2f}s", end_str, dur_str)
+    console.print(table)
 
 
 _DELETE_RECIPES = "__ffx_delete_recipes__"

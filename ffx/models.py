@@ -27,6 +27,22 @@ class StreamInfo:
     bit_rate: Optional[int] = None
     duration: Optional[float] = None
     tags: dict = field(default_factory=dict)
+    # ffprobe's per-stream disposition flags (default/forced/hearing_impaired/
+    # etc, each 0 or 1) - which audio/subtitle track a player picks by
+    # default, or marks as forced/commentary, isn't visible anywhere else.
+    disposition: dict = field(default_factory=dict)
+
+    @property
+    def language(self) -> str:
+        return self.tags.get("language", "")
+
+    @property
+    def is_default(self) -> bool:
+        return bool(self.disposition.get("default"))
+
+    @property
+    def is_forced(self) -> bool:
+        return bool(self.disposition.get("forced"))
 
     @property
     def is_video(self) -> bool:
@@ -55,6 +71,14 @@ class StreamInfo:
 
 
 @dataclass
+class Chapter:
+    index: int
+    start: float
+    end: float
+    title: str = ""
+
+
+@dataclass
 class MediaInfo:
     path: Path
     format_name: str
@@ -64,6 +88,7 @@ class MediaInfo:
     bit_rate: int
     streams: list[StreamInfo]
     tags: dict = field(default_factory=dict)
+    chapters: list[Chapter] = field(default_factory=list)
 
     @property
     def video_streams(self) -> list[StreamInfo]:

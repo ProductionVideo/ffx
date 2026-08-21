@@ -185,6 +185,49 @@ def test_pending_drop_prefills_path_screen_on_mount(tmp_path):
     assert asyncio.run(scenario()) == str(clip)
 
 
+def test_ctrl_b_f_scroll_the_log_behind_an_open_modal():
+    """Regression: once a modal (the operations menu, a QC report) has
+    pushed the log's newest lines past the fold, a ModalScreen owns all
+    input - the log itself never sees a key while something is on top of
+    it. Ctrl+B/Ctrl+F (the vi/less pager convention) are bound on the App
+    so they intercept before dispatch reaches the active screen, and
+    should scroll the log even while a totally unrelated modal is
+    focused and answering keys."""
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            log = app.query_one("#log", RichLog)
+            for i in range(200):
+                log.write(f"line {i}")
+            await pilot.pause()
+            top_before_scroll = log.scroll_y
+
+            # A modal is up and focused - the log is not the active
+            # screen's widget, so it can't receive keys directly.
+            app.push_screen(SelectScreen("What next?", [("Convert", "convert"), ("Cut", "cut")]))
+            await pilot.pause()
+            assert isinstance(app.screen, SelectScreen)
+
+            await pilot.press("ctrl+b")
+            await pilot.pause()
+            scrolled_up = log.scroll_y
+
+            await pilot.press("ctrl+f")
+            await pilot.pause()
+            scrolled_down = log.scroll_y
+
+            # The modal never lost focus/functioned normally throughout.
+            still_modal = isinstance(app.screen, SelectScreen)
+            return top_before_scroll, scrolled_up, scrolled_down, still_modal
+
+    top_before, scrolled_up, scrolled_down, still_modal = asyncio.run(scenario())
+    assert scrolled_up < top_before
+    assert scrolled_down > scrolled_up
+    assert still_modal is True
+
+
 def test_progress_bar_is_actually_visible():
     """Regression: the label used to take 1fr and shove the bar off-screen."""
 

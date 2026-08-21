@@ -21,6 +21,7 @@ _SAMPLE_FFPROBE_JSON = {
             "duration": "10.000000",
             "bits_per_raw_sample": "8",
             "tags": {"language": "und"},
+            "disposition": {"default": 1},
         },
         {
             "index": 1,
@@ -32,7 +33,8 @@ _SAMPLE_FFPROBE_JSON = {
             "sample_rate": "48000",
             "bit_rate": "192000",
             "duration": "10.000000",
-            "tags": {},
+            "tags": {"language": "eng"},
+            "disposition": {"default": 1, "forced": 0},
         },
     ],
     "format": {
@@ -43,6 +45,10 @@ _SAMPLE_FFPROBE_JSON = {
         "bit_rate": "5200000",
         "tags": {"title": "Sample"},
     },
+    "chapters": [
+        {"id": 0, "start_time": "0.000000", "end_time": "5.000000", "tags": {"title": "Intro"}},
+        {"id": 1, "start_time": "5.000000", "end_time": "10.000000", "tags": {}},
+    ],
 }
 
 
@@ -73,6 +79,14 @@ def test_probe_parses_ffprobe_json(monkeypatch):
     assert audio is not None
     assert audio.channels == 2
     assert audio.sample_rate == 48000
+    assert audio.language == "eng"
+    assert audio.is_default is True
+    assert audio.is_forced is False
+
+    assert len(media.chapters) == 2
+    assert media.chapters[0].title == "Intro"
+    assert media.chapters[0].start == 0.0 and media.chapters[0].end == 5.0
+    assert media.chapters[1].title == ""
 
 
 def test_probe_raises_on_nonzero_exit(monkeypatch):

@@ -102,6 +102,20 @@ class FFXApp(App):
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+x", "cancel_encode", "Cancel encode", show=False),
+        # priority=True so these fire even while a modal prompt screen
+        # owns focus - a menu or form is pushed as its own Screen, and
+        # only the active Screen normally receives input, which is
+        # exactly what makes the log unscrollable once something (the
+        # operations menu, a QC report) has scrolled past the fold: the
+        # widget behind the modal simply never sees the key. The vi/less
+        # pager convention (Ctrl+B back, Ctrl+F forward) rather than
+        # PageUp/PageDown - those are already OptionList's own binding
+        # for moving its highlighted row, and rather than Ctrl+Up/Down -
+        # those are an extended escape sequence many terminals (Terminal.
+        # app, some tmux configs) don't forward at all without extra
+        # setup, unlike a real control byte every terminal sends as-is.
+        Binding("ctrl+b", "scroll_log_up", "Scroll log", show=True, priority=True),
+        Binding("ctrl+f", "scroll_log_down", "Scroll log", show=True, priority=True),
     ]
 
     def __init__(self, flow: Callable[[], None]):
@@ -210,6 +224,12 @@ class FFXApp(App):
     def action_cancel_encode(self) -> None:
         if self._progress_handle is not None:
             self._progress_handle.cancel_event.set()
+
+    def action_scroll_log_up(self) -> None:
+        self.query_one("#log", RichLog).scroll_page_up()
+
+    def action_scroll_log_down(self) -> None:
+        self.query_one("#log", RichLog).scroll_page_down()
 
     # ---- app-wide drag-and-drop ----
 
