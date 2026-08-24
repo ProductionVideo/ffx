@@ -40,6 +40,16 @@ Plus:
 - **Back navigation everywhere** — every question supports going back (Ctrl+Z, or the Back item in menus) without losing the answers you already gave.
 - **Honest previews** — the full command is shown before anything runs; size estimates on quality choices; before/after size comparison when it's done.
 
+## Keyboard shortcuts (full-screen app)
+
+| Key | Does what |
+|---|---|
+| `Ctrl+B` / `Ctrl+F` | Scroll the activity log back/forward — works even with a menu or form open on top of it |
+| `Ctrl+X` | Cancel the encode that's currently running |
+| `Ctrl+R` | Clear the session — abort whatever's happening (a question, a running encode) and return to a clean start: empty log, empty panes, back to picking a file |
+| `Ctrl+Q` | Quit |
+| `Esc` | Back, inside any question that supports it |
+
 ## Install
 
 One command — it sets up everything ffx needs (uv with its own Python, ffx itself, and offers to install ffmpeg via Homebrew if it's missing):

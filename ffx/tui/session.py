@@ -22,6 +22,24 @@ if TYPE_CHECKING:
 
 _app: Optional["FFXApp"] = None
 
+# Dismiss payload the Ctrl+R reset shortcut uses on whatever prompt screen
+# is currently up. A real screen answer is always the (value, back) tuple
+# every PromptScreen dismisses with, so this bare sentinel can never
+# collide with one - prompt() below recognizes it and turns it into
+# ResetRequested instead of handing it back as if it were an answer.
+RESET = "\x00ffx:reset\x00"
+
+
+class ResetRequested(Exception):
+    """Raised in the flow thread when the Ctrl+R reset shortcut fires.
+
+    Deliberately uncaught by run_wizard (which only catches GoBack) or by
+    any operation's prompt() - it unwinds straight through however many
+    stack frames the flow is nested (an operation's own prompt(), the
+    pipeline loop, the stage machine) out of _flow() entirely, back to
+    FFXApp._run_flow's own loop, which starts a clean run.
+    """
+
 
 def set_app(app: Optional["FFXApp"]) -> None:
     global _app
@@ -47,9 +65,30 @@ def render_to_text(renderable: RenderableType, width: int = 80) -> Text:
 
 
 def prompt(screen: Any) -> Any:
-    """Show a modal prompt screen and block (worker thread) for its answer."""
+    """Show a modal prompt screen and block (worker thread) for its answer.
+
+    Checked for a pending reset both before and after: before, so a
+    Ctrl+R that landed while nothing was actually blocking (mid-build(),
+    between two questions) is honored the moment the next question would
+    otherwise appear, rather than silently swallowed; after, because
+    that's how a reset requested *while this exact screen was up* comes
+    back - action_reset_session dismisses the live screen with RESET,
+    which surfaces here as this call's return value.
+    """
     assert _app is not None
-    return _app.call_from_thread(_app.push_screen_wait, screen)
+    if _app.take_reset_pending():
+        raise ResetRequested()
+    result = _app.call_from_thread(_app.push_screen_wait, screen)
+    # Both sides of this check must run unconditionally (not "or"'d
+    # directly) - take_reset_pending() also clears the flag, and a
+    # short-circuited "result == RESET or take_reset_pending()" would
+    # skip that clear whenever the dismiss itself was what carried the
+    # reset, leaving the flag set to wrongly trigger a second, phantom
+    # reset on the very next unrelated prompt() call.
+    reset_via_flag = _app.take_reset_pending()
+    if result == RESET or reset_via_flag:
+        raise ResetRequested()
+    return result
 
 
 def show_media(renderable: RenderableType) -> bool:

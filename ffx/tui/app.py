@@ -19,6 +19,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Input, ProgressBar, RichLog, Static
 
 from ffx.tui import session
+from ffx.tui.screens import PromptScreen
 from ffx.ui import theme
 
 
@@ -116,6 +117,11 @@ class FFXApp(App):
         # setup, unlike a real control byte every terminal sends as-is.
         Binding("ctrl+b", "scroll_log_up", "Scroll log", show=True, priority=True),
         Binding("ctrl+f", "scroll_log_down", "Scroll log", show=True, priority=True),
+        # priority=True for the same reason as the scroll keys above -
+        # reset has to work no matter what's currently open (a menu, a
+        # form, an active encode), not just when the base screen happens
+        # to have focus.
+        Binding("ctrl+r", "reset_session", "Clear session", show=True, priority=True),
     ]
 
     def __init__(self, flow: Callable[[], None]):
@@ -126,6 +132,12 @@ class FFXApp(App):
         self._progress_handle: Optional[session.ProgressHandle] = None
         self._progress_total: float = 0.0
         self._pending_drop: Optional[str] = None
+        # Set by action_reset_session, read (and cleared) by
+        # session.prompt() in the flow thread. A threading.Event rather
+        # than a plain bool for the same reason ProgressHandle.cancel_event
+        # is one - it's genuinely written from the App's event loop and
+        # read from the flow's worker thread.
+        self._reset_event = threading.Event()
 
     def compose(self) -> ComposeResult:
         yield Static("ffx — ffmpeg, for the simple", id="banner")
@@ -159,34 +171,55 @@ class FFXApp(App):
         from ffx.tui.screens import SelectScreen
 
         while True:
-            failed = False
             try:
-                self._flow()
-            except SystemExit as exc:
-                if exc.code:
-                    failed = True
-            except Exception:
-                import traceback
-
-                self.call_from_thread(self.append_log, traceback.format_exc())
-                failed = True
-
-            message = (
-                "That run hit trouble (details in the log) — what now?"
-                if failed
-                else "All done — what now?"
-            )
-            choice, _ = session.prompt(
-                SelectScreen(
-                    message,
-                    [("Start another pipeline", "again"), ("Quit ffx", "quit")],
-                    default="again",
+                failed = self._run_flow_once()
+                message = (
+                    "That run hit trouble (details in the log) — what now?"
+                    if failed
+                    else "All done — what now?"
                 )
-            )
+                choice, _ = session.prompt(
+                    SelectScreen(
+                        message,
+                        [("Start another pipeline", "again"), ("Quit ffx", "quit")],
+                        default="again",
+                    )
+                )
+            except session.ResetRequested:
+                # action_reset_session already wiped the log/panes and
+                # cleared the flag - nothing left to do but go straight
+                # into a fresh run. This is reachable from two different
+                # spots: raised out of self._flow() itself (inside
+                # _run_flow_once), or out of the trailing "what now"
+                # prompt right above - both just mean "start over", so
+                # one handler covers both.
+                continue
+
             if choice != "again":
                 self.call_from_thread(self.exit)
                 return
             self.call_from_thread(self.reset_panes)
+
+    def _run_flow_once(self) -> bool:
+        """Run self._flow() once; return whether it failed.
+
+        ResetRequested is deliberately left to propagate to _run_flow's
+        own except clause rather than being caught here - it needs to
+        skip the "what now" prompt below entirely, not report a result
+        that leads into it.
+        """
+        try:
+            self._flow()
+        except session.ResetRequested:
+            raise
+        except SystemExit as exc:
+            return bool(exc.code)
+        except Exception:
+            import traceback
+
+            self.call_from_thread(self.append_log, traceback.format_exc())
+            return True
+        return False
 
     # ---- called (via call_from_thread) by ffx.tui.session ----
 
@@ -230,6 +263,36 @@ class FFXApp(App):
 
     def action_scroll_log_down(self) -> None:
         self.query_one("#log", RichLog).scroll_page_down()
+
+    def action_reset_session(self) -> None:
+        """Ctrl+R: abort whatever's happening and return to a clean start.
+
+        Whatever's currently holding up the flow thread gets unstuck by
+        whichever mechanism it's actually blocked on: a running encode is
+        cancelled (same event Ctrl+X sets - close_progress() follows from
+        that the same way it already does for a manual cancel), and an
+        open prompt screen is dismissed with the RESET sentinel so
+        session.prompt() turns it into ResetRequested. The flag alone
+        covers the gap where neither is true (mid-build(), between two
+        questions) - the next prompt() call raises on sight of it. Either
+        way _run_flow's handler is what actually restarts things; this
+        only clears the visible chrome and unblocks the thread.
+        """
+        self._reset_event.set()
+        if self._progress_handle is not None:
+            self._progress_handle.cancel_event.set()
+        if isinstance(self.screen, PromptScreen):
+            self.screen.dismiss(session.RESET)
+        self._pending_drop = None
+        self.query_one("#log", RichLog).clear()
+        self.reset_panes()
+        self.notify("Session cleared.", timeout=2)
+
+    def take_reset_pending(self) -> bool:
+        if self._reset_event.is_set():
+            self._reset_event.clear()
+            return True
+        return False
 
     # ---- app-wide drag-and-drop ----
 

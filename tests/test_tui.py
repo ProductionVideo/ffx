@@ -9,9 +9,10 @@ import asyncio
 import subprocess
 
 import pytest
+from rich.text import Text
 from textual import events
 from textual.app import App
-from textual.widgets import Input, ProgressBar, RichLog
+from textual.widgets import Input, ProgressBar, RichLog, Static
 
 from ffx.tui import session
 from ffx.tui.app import FFXApp
@@ -228,6 +229,107 @@ def test_ctrl_b_f_scroll_the_log_behind_an_open_modal():
     assert still_modal is True
 
 
+def test_ctrl_r_clears_chrome_and_dismisses_the_open_screen():
+    """Regression target: Ctrl+R should wipe the log/panes and unblock
+    whatever prompt is currently up, however deep in the flow it is -
+    exercised here directly via action_reset_session rather than through
+    a real flow, to isolate the chrome-clearing/dismiss mechanics from
+    the exception-propagation behaviour covered separately below."""
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            log = app.query_one("#log", RichLog)
+            log.write("leftover output")
+            app.set_media_pane(Text("sample.mp4"))
+            app.set_pipeline_pane(Text("1. Scale"))
+            await pilot.pause()
+
+            screen = SelectScreen("Some question", [("A", "a"), ("B", "b")])
+            dismissed = {}
+            app.push_screen(screen, lambda value: dismissed.setdefault("result", value))
+            await pilot.pause()
+            assert app.screen is screen
+
+            app.action_reset_session()
+            await pilot.pause()
+
+            return (
+                dismissed.get("result"),
+                len(log.lines),
+                str(app.query_one("#media-pane", Static).content),
+                str(app.query_one("#pipeline-pane", Static).content),
+            )
+
+    result, log_lines, media_text, pipeline_text = asyncio.run(scenario())
+    assert result == session.RESET
+    assert log_lines == 0
+    assert media_text == "No file picked yet."
+    assert pipeline_text == "Pipeline is empty."
+
+
+def test_ctrl_r_key_binding_fires_through_a_modal():
+    """The actual key path (not calling the action directly): Ctrl+R
+    while a modal is up should reach the App exactly like Ctrl+B/Ctrl+F
+    do - same priority-binding mechanism, verified the same way."""
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.query_one("#log", RichLog).write("some output")
+            screen = SelectScreen("Some question", [("A", "a")])
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            return isinstance(app.screen, SelectScreen), len(app.query_one("#log", RichLog).lines)
+
+    still_modal_but_different, log_lines = asyncio.run(scenario())
+    # A *new* prompt (the flow's next question, or here just nothing since
+    # the fake flow is a no-op) may or may not be up - what matters is the
+    # log got cleared, proving the key reached action_reset_session at all.
+    assert log_lines == 0
+
+
+def test_reset_requested_propagates_through_flow_instead_of_being_logged_as_a_failure():
+    """Regression: _run_flow_once's generic `except Exception` used to
+    catch ResetRequested too (it IS an Exception), silently treating a
+    reset as a crashed run - logging a traceback and showing the 'hit
+    trouble' message - instead of letting FlowApp's own handler restart
+    cleanly. A fake flow that raises ResetRequested on its second call
+    (simulating a reset landing mid-question) must NOT produce a
+    traceback in the log, and _run_flow must loop back into the flow
+    again rather than stopping."""
+
+    async def scenario():
+        calls = []
+
+        def fake_flow():
+            calls.append(1)
+            if len(calls) == 1:
+                return  # first pass: finishes normally
+            if len(calls) == 2:
+                raise session.ResetRequested()  # simulates a reset mid-question
+            return  # third pass: let the app settle so cleanup doesn't hang
+
+        app = FFXApp(fake_flow)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await _wait_for_screen(pilot, app)  # "All done - what now?"
+            app.action_reset_session()  # reset while that prompt is up
+            await pilot.pause(0.3)
+            await _wait_for_screen(pilot, app)  # back to "All done" from pass 3
+            log_text = "\n".join(str(line) for line in app.query_one("#log", RichLog).lines)
+            return calls, log_text
+
+    calls, log_text = asyncio.run(scenario())
+    assert len(calls) == 3
+    assert "Traceback" not in log_text
+
+
 def test_progress_bar_is_actually_visible():
     """Regression: the label used to take 1fr and shove the bar off-screen."""
 
@@ -256,6 +358,12 @@ def test_bridged_prompts_choose_inside_wizard_backs_out():
             super().__init__()
             self.picked = None
             self.backed = "unset"
+
+        def take_reset_pending(self) -> bool:
+            # Minimal double standing in for FFXApp - this test isn't
+            # exercising reset, but session.prompt() unconditionally
+            # checks this on whatever _app is set, so it needs to exist.
+            return False
 
         def on_mount(self) -> None:
             session.set_app(self)
@@ -374,3 +482,50 @@ def test_full_flow_in_app_scale_preset(sample_clip, tmp_path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert probe_out == "160,120"
+
+
+def test_ctrl_r_returns_the_real_flow_to_step_one(sample_clip):
+    """End to end with the real _flow (no fakes): get partway into a real
+    pipeline - a file picked, an operation queued, sitting at the
+    operations menu (step 2/4) - then Ctrl+R. The flow must land back on
+    the very first question, with the log and Media pane wiped, not just
+    resume from wherever it was."""
+    from ffx import hardware
+    from ffx.__main__ import _flow
+
+    caps = hardware.detect()
+    app = FFXApp(lambda: _flow(caps))
+
+    async def scenario():
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _wait_for_message(pilot, app, "Path to a media file")
+            app.screen.query_one(Input).value = str(sample_clip)
+            await pilot.press("enter")
+
+            await _wait_for_message(pilot, app, "What next?")
+            await pilot.press("down", "down", "enter")  # convert, cut -> scale
+            await _wait_for_message(pilot, app, "Scale — choose a preset")
+            await pilot.press(*(["down"] * 5), "enter")  # -> Half size
+
+            # Now sitting at the operations menu with a real queued op and
+            # a real populated Media/Pipeline pane and log history behind it.
+            await _wait_for_message(pilot, app, "What next?")
+            media_before = str(app.query_one("#media-pane", Static).content)
+            assert sample_clip.name in media_before
+
+            await pilot.press("ctrl+r")
+            await pilot.pause(0.3)
+
+            # Back to the very first question - not resumed mid-pipeline.
+            await _wait_for_message(pilot, app, "Path to a media file")
+            media_after = str(app.query_one("#media-pane", Static).content)
+            log_text_after = "\n".join(str(line) for line in app.query_one("#log", RichLog).lines)
+            return media_after, log_text_after
+
+    media_after, log_text_after = asyncio.run(scenario())
+    assert media_after == "No file picked yet."
+    # The log was cleared, not just added to - it holds only the fresh
+    # restart's own output (its "1/4" step banner), never the "2/4" step
+    # marker or anything else from the pipeline that was abandoned.
+    assert "1/4" in log_text_after
+    assert "2/4" not in log_text_after
