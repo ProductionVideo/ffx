@@ -39,6 +39,7 @@ Plus:
 - **Batch mode** — point it at a directory and the pipeline runs across every media file.
 - **Back navigation everywhere** — every question supports going back (Ctrl+Z, or the Back item in menus) without losing the answers you already gave.
 - **Honest previews** — the full command is shown before anything runs; size estimates on quality choices; before/after size comparison when it's done.
+- **Don't touch what wasn't asked to be touched** — skip Convert and any track no queued operation actually needed (a Sound-only edit, a metadata tag, a faststart fix) is copied losslessly instead of silently re-encoding through ffmpeg's own container default.
 
 ## Keyboard shortcuts (full-screen app)
 

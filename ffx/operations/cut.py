@@ -73,12 +73,17 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
 
     if reencode:
         # Output-side seeking: ffmpeg decodes from the start but only
-        # writes from `start` onward, giving a frame-accurate cut point.
+        # writes from `start` onward, giving a frame-accurate cut point -
+        # a real re-encode of both streams, not a filter, so build_argv's
+        # implicit-copy-when-untouched default (for a pipeline with no
+        # Convert step) needs to be told this isn't a plain passthrough.
         return OperationSettings(
             name=name,
             display_name=display_name,
             description=_describe(mode, params),
             output_args=trim_args,
+            forces_video_reencode=True,
+            forces_audio_reencode=True,
             serializable={},
         )
 

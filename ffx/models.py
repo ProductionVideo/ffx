@@ -185,6 +185,16 @@ class OperationSettings:
     # size encode. JobBuilder runs the job as a real analysis-then-encode
     # pair instead of one invocation when any operation sets this.
     two_pass: bool = False
+    # Set by an operation that needs its track actually re-encoded (a
+    # frame-rate change, accurate-seek trimming) despite not setting
+    # video_filter/audio_filter itself - build_argv's "nothing touched
+    # this track, default it to -c:v/-c:a copy" convenience (for a
+    # pipeline with no Convert step) has to know not to apply there.
+    # Confirmed empirically, not assumed: ffmpeg silently ignores -r or
+    # -ar when combined with -c:v/-c:a copy instead of erroring, so
+    # getting this wrong would be a silent correctness bug, not a loud one.
+    forces_video_reencode: bool = False
+    forces_audio_reencode: bool = False
     serializable: dict = field(default_factory=dict)
 
 

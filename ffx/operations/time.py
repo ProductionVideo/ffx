@@ -133,6 +133,7 @@ def _build_framerate(params: dict) -> OperationSettings:
         display_name=display_name,
         description=f"Conform to {fps}fps",
         output_args=["-r", fps],
+        forces_video_reencode=True,
         serializable={},
     )
 

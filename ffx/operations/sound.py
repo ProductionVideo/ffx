@@ -174,7 +174,9 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
     if mode == "resample":
         return OperationSettings(
             name=name, display_name=display_name, description=f"Resample to {params['rate']}Hz",
-            non_video_output_args=["-ar", params["rate"]], serializable={},
+            non_video_output_args=["-ar", params["rate"]],
+            forces_audio_reencode=True,
+            serializable={},
         )
     if mode == "bitdepth":
         depth = params["depth"]

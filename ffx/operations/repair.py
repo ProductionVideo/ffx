@@ -76,7 +76,9 @@ def build(params: dict, media: MediaInfo, hardware: HardwareCapabilities) -> Ope
         )
         return OperationSettings(
             name=name, display_name=display_name, description=f"Conform to {fps}fps constant frame rate",
-            output_args=["-fps_mode", "cfr", "-r", fps], serializable={},
+            output_args=["-fps_mode", "cfr", "-r", fps],
+            forces_video_reencode=True,
+            serializable={},
         )
 
     if mode == "remux":

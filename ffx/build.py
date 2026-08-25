@@ -65,6 +65,12 @@ def build_argv(job: FFmpegJob) -> list[str]:
         if af_parts:
             argv.extend(["-af", ",".join(af_parts)])
 
+        video_default_copy, audio_default_copy = _default_copy_tracks(job)
+        if video_default_copy:
+            argv.extend(["-c:v", "copy"])
+        if audio_default_copy:
+            argv.extend(["-c:a", "copy"])
+
     for i, op in enumerate(job.operations):
         # "{inN}" placeholders are valid in output args too, not just
         # filter_complex - e.g. Sound's replace mode maps an extra audio
@@ -75,6 +81,44 @@ def build_argv(job: FFmpegJob) -> list[str]:
 
     argv.append(str(job.output.path))
     return argv
+
+
+def _default_copy_tracks(job: FFmpegJob) -> tuple[bool, bool]:
+    """(default video to copy, default audio to copy) - for a pipeline
+    with no explicit codec choice, leaving one to ffmpeg's own default
+    encoder for the container is a silent, unasked-for re-encode (and
+    unnecessary one: nothing in the queued operations needed the pixels
+    or samples touched at all). Defaulting instead to a stream copy
+    matches what a user who never picked Convert almost certainly wants:
+    don't touch what wasn't asked to be touched.
+
+    Conservatively opted out of in two situations:
+    - Any operation needs filter_complex. Those graphs sometimes pass a
+      stream through untouched (Composite's audio, mapped straight from
+      the source) in ways this can't safely tell apart from one that
+      doesn't reference it at all - left as today's existing (unoptimized
+      but correct) behaviour rather than risk misreading the graph.
+    - The output container isn't the source's own (Convert, or an
+      operation like Thumbnail/Sound's audio-extract that overrides the
+      extension) - those already choose their own codecs on purpose.
+    """
+    if any(op.filter_complex for op in job.operations):
+        return False, False
+    if job.output.path.suffix.lower() != job.inputs[0].suffix.lower():
+        return False, False
+
+    all_args = [arg for op in job.operations for arg in (*op.output_args, *op.non_video_output_args)]
+    video_spoken_for = (
+        any(op.video_filter or op.forces_video_reencode for op in job.operations)
+        or "-c:v" in all_args
+        or "-vn" in all_args
+    )
+    audio_spoken_for = (
+        any(op.audio_filter or op.forces_audio_reencode for op in job.operations)
+        or "-c:a" in all_args
+        or "-an" in all_args
+    )
+    return not video_spoken_for, not audio_spoken_for
 
 
 def _resolve_placeholders(args: list[str], indices: list[int]) -> list[str]:

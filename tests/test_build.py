@@ -31,6 +31,10 @@ def test_single_simple_op():
         "in.mp4",
         "-vf",
         "scale=1280:-2",
+        # Audio was never touched - defaulted to a copy instead of
+        # falling through to ffmpeg's own encoder for the container.
+        "-c:a",
+        "copy",
         "-c:v",
         "libx264",
         "out.mp4",
@@ -218,3 +222,93 @@ def test_build_two_pass_argvs():
     normal = build_argv(job)
     assert pass2[:-1] == normal[:-1] + ["-pass", "2", "-passlogfile", "/tmp/ffx-pass"]
     assert pass2[-1] == "out.mp4"
+
+
+def test_untouched_video_and_audio_both_default_to_copy():
+    # A pure metadata edit: touches neither track at all.
+    metadata = OperationSettings(
+        name="metadata", display_name="Metadata", description="",
+        non_video_output_args=["-metadata", "title=x"],
+    )
+    argv = build_argv(make_job([metadata]))
+    assert "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy"
+    assert "-c:a" in argv and argv[argv.index("-c:a") + 1] == "copy"
+
+
+def test_audio_only_op_defaults_video_to_copy():
+    channels = OperationSettings(
+        name="sound", display_name="Sound", description="",
+        audio_filter=["pan=stereo|c0=c1|c1=c1"],
+    )
+    argv = build_argv(make_job([channels]))
+    assert "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy"
+    assert "-af" in argv  # audio was genuinely touched, no -c:a default added
+    assert "-c:a" not in argv
+
+
+def test_explicit_codec_choice_suppresses_the_default():
+    convert = OperationSettings(
+        name="convert", display_name="Convert", description="",
+        output_args=["-c:v", "libx264"], non_video_output_args=["-c:a", "aac"],
+    )
+    argv = build_argv(make_job([convert]))
+    assert argv.count("-c:v") == 1
+    assert argv.count("-c:a") == 1
+
+
+def test_forces_video_reencode_suppresses_the_video_default():
+    # Regression target: a frame-rate change (Cut's accurate mode,
+    # Repair's conform, Time's framerate op) needs a real re-encode
+    # despite setting no video_filter - confirmed empirically that
+    # ffmpeg silently ignores -r under -c:v copy rather than erroring,
+    # so this must never coexist with the auto-copy default.
+    framerate = OperationSettings(
+        name="repair", display_name="Repair", description="",
+        output_args=["-fps_mode", "cfr", "-r", "30"],
+        forces_video_reencode=True,
+    )
+    argv = build_argv(make_job([framerate]))
+    assert "-c:v" not in argv
+    assert "-c:a" in argv and argv[argv.index("-c:a") + 1] == "copy"
+
+
+def test_forces_audio_reencode_suppresses_the_audio_default():
+    resample = OperationSettings(
+        name="sound", display_name="Sound", description="",
+        non_video_output_args=["-ar", "48000"],
+        forces_audio_reencode=True,
+    )
+    argv = build_argv(make_job([resample]))
+    assert "-c:a" not in argv
+    assert "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy"
+
+
+def test_no_default_copy_when_output_extension_changes():
+    # Convert (or Thumbnail/Sound's audio extract) already picks its own
+    # codecs on purpose - the source's own codec isn't even guaranteed
+    # to be valid in a different container.
+    extract = OperationSettings(
+        name="sound", display_name="Sound", description="",
+        non_video_output_args=["-vn", "-c:a", "libmp3lame"],
+    )
+    job = FFmpegJob(
+        inputs=[Path("in.mp4")], operations=[extract],
+        output=OutputConfig(path=Path("out.mp3")), hardware=NO_HW,
+    )
+    argv = build_argv(job)
+    assert "-c:v" not in argv
+
+
+def test_no_default_copy_when_filter_complex_present():
+    # Composite/Sequence's filter_complex sometimes passes a stream
+    # through untouched (Composite's audio via a plain "-map 0:a?") in
+    # ways this can't safely distinguish from one it doesn't reference -
+    # left exactly as before rather than risk misreading the graph.
+    composite = OperationSettings(
+        name="composite", display_name="Composite", description="",
+        filter_complex="[0:v][1:v]overlay[outv]",
+        output_args=["-map", "[outv]", "-map", "0:a?"],
+    )
+    argv = build_argv(make_job([composite]))
+    assert "-c:v" not in argv
+    assert "-c:a" not in argv
