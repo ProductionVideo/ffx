@@ -30,7 +30,7 @@ Operations compose into a pipeline — queue several against one file, or agains
 | **Sound** | Volume, normalize, strip/extract audio; replace or mix in another audio file |
 | **Metadata** | View / edit container tags |
 | **Repair** | Tolerant remux for broken files |
-| **Analyse** | Inspect a file; QC scans for black frames, silence, and freezes |
+| **Analyse** | Every stream/chapter, frame data (I/P/B mix, GOP size, field order, measured vs. declared frame rate), and QC scans for black frames, silence, and freezes |
 
 Plus:
 

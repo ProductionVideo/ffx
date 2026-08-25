@@ -22,6 +22,12 @@ _SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\
 _FREEZE_START_RE = re.compile(r"lavfi\.freezedetect\.freeze_start:\s*([\d.]+)")
 _FREEZE_END_RE = re.compile(r"lavfi\.freezedetect\.freeze_end:\s*([\d.]+)")
 _FREEZE_DURATION_RE = re.compile(r"lavfi\.freezedetect\.freeze_duration:\s*([\d.]+)")
+# showinfo logs one line per decoded frame - "i:" is the field-order flag
+# (P/T/B = progressive/top-first/bottom-first), not to be confused with
+# "type:" (I/P/B frame type) right after "iskey:" - the non-greedy .*?
+# spans are there so field order in the line (which has shifted between
+# ffmpeg versions before) doesn't break the match.
+_FRAME_RE = re.compile(r"n:\s*(\d+).*?pts_time:([\d.-]+).*?\si:(\S+)\s+iskey:(\d)\s+type:(\w)")
 
 # "Streams & chapters" is synthesized straight from the already-probed
 # MediaInfo (no ffmpeg call), so it's instant - grouped with the other
@@ -31,6 +37,7 @@ _FREEZE_DURATION_RE = re.compile(r"lavfi\.freezedetect\.freeze_duration:\s*([\d.
 # just the primary streams summary_rows() shows).
 _CHECK_CHOICES = [
     ("Streams & chapters — every track, language, default/forced flags", "streams"),
+    ("Frame data — frame count, I/P/B mix, GOP size, field order", "frames"),
     ("Black sections", "black"),
     ("Silent sections", "silence"),
     ("Frozen (static) sections", "freeze"),
@@ -39,10 +46,32 @@ _CHECK_CHOICES = [
 PRESETS = [
     Preset(
         "Full QC report",
-        "Every stream/chapter plus black/silent/frozen section detection",
-        {"checks": ["streams", "black", "silence", "freeze"]},
+        "Every stream/chapter, frame data, plus black/silent/frozen section detection",
+        {"checks": ["streams", "frames", "black", "silence", "freeze"]},
     ),
 ]
+
+
+@dataclass
+class FrameStats:
+    total: int = 0
+    # Frame-type letter (I/P/B, occasionally others) -> count, in the
+    # order first seen - dict preserves that, which reads more naturally
+    # than an alphabetized breakdown (I before P before B, matching a
+    # GOP's own structure).
+    type_counts: dict = field(default_factory=dict)
+    keyframe_count: int = 0
+    # None when fewer than 2 keyframes were seen - one GOP length isn't
+    # an "average" of anything.
+    avg_gop_frames: Optional[float] = None
+    # "progressive" | "interlaced (top-field-first)" |
+    # "interlaced (bottom-field-first)" | "mixed" | "" (no frames read)
+    field_order: str = ""
+    # Derived from the scanned frames' own pts_time span, independent of
+    # whatever the container's stream header claims - the point of this
+    # check is catching a mismatch (VFR, a wrong declared rate), not
+    # re-reporting the same number summary_rows() already shows.
+    measured_fps: Optional[float] = None
 
 
 @dataclass
@@ -57,6 +86,7 @@ class QCFindings:
     freeze_sections: list[tuple[float, Optional[float], Optional[float]]] = field(
         default_factory=list
     )
+    frame_stats: Optional[FrameStats] = None
 
 
 def prompt() -> dict:
@@ -66,7 +96,7 @@ def prompt() -> dict:
     checks = prompts.multi_choose(
         "Which checks? (space to toggle, enter to confirm)",
         _CHECK_CHOICES,
-        defaults=["streams", "black", "silence"],
+        defaults=["streams", "frames", "black", "silence"],
     )
     return {"checks": checks}
 
@@ -109,6 +139,12 @@ def summary_rows(media: MediaInfo) -> list[tuple[str, str]]:
 
 def run_qc(path: Path, checks: list[str], duration: float = 0.0, console: Optional[Console] = None) -> QCFindings:
     findings = QCFindings()
+    if "frames" in checks:
+        stderr = _run_filter(
+            path, duration, console, "Reading frame data",
+            vf="showinfo", drop_audio=True,
+        )
+        findings.frame_stats = _parse_frame_stats(stderr)
     if "black" in checks:
         stderr = _run_filter(
             path, duration, console, "Checking for black sections",
@@ -140,6 +176,45 @@ def run_qc(path: Path, checks: list[str], duration: float = 0.0, console: Option
             dur = durations[i] if i < len(durations) else None
             findings.freeze_sections.append((start, end, dur))
     return findings
+
+
+def _parse_frame_stats(stderr: str) -> FrameStats:
+    matches = _FRAME_RE.findall(stderr)
+    stats = FrameStats()
+    if not matches:
+        return stats
+
+    stats.total = len(matches)
+    field_orders: set = set()
+    keyframe_indices = []
+    for n, _pts_time, i_field, iskey, ftype in matches:
+        stats.type_counts[ftype] = stats.type_counts.get(ftype, 0) + 1
+        field_orders.add(i_field)
+        if iskey == "1":
+            keyframe_indices.append(int(n))
+
+    stats.keyframe_count = len(keyframe_indices)
+    if len(keyframe_indices) >= 2:
+        gaps = [b - a for a, b in zip(keyframe_indices, keyframe_indices[1:])]
+        stats.avg_gop_frames = sum(gaps) / len(gaps)
+
+    stats.field_order = _describe_field_order(field_orders)
+
+    first_pts, last_pts = float(matches[0][1]), float(matches[-1][1])
+    span = last_pts - first_pts
+    if span > 0 and stats.total > 1:
+        stats.measured_fps = (stats.total - 1) / span
+    return stats
+
+
+def _describe_field_order(field_orders: set) -> str:
+    if field_orders <= {"P"}:
+        return "progressive"
+    if field_orders <= {"T"}:
+        return "interlaced (top-field-first)"
+    if field_orders <= {"B"}:
+        return "interlaced (bottom-field-first)"
+    return "mixed"
 
 
 def section_stats(

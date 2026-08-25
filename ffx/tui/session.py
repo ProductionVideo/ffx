@@ -105,6 +105,17 @@ def show_pipeline(renderable: RenderableType) -> bool:
     return True
 
 
+def reset_panes() -> bool:
+    """Clear the Media/Pipeline panes back to their empty state - used
+    wherever the classic-wizard flow restarts at picking a new file, so
+    the previous file's info doesn't sit there stale until the next
+    _show_input_feedback overwrites it."""
+    if _app is None:
+        return False
+    _app.call_from_thread(_app.reset_panes)
+    return True
+
+
 class ProgressHandle:
     """One running ffmpeg's progress, as seen from the runner's thread."""
 

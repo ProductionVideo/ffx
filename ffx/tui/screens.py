@@ -51,7 +51,13 @@ PromptScreen .prompt-error {
 }
 PromptScreen OptionList, PromptScreen SelectionList {
     height: auto;
-    max-height: 20;
+    /* A viewport-relative cap (not a fixed row count) so the biggest
+       menu (the 17-category operations list) never grows tall enough to
+       blanket the whole log behind it, on any terminal size - it stays
+       internally scrollable (already supported) past this, same as
+       today, just sooner. Most menus are well under this and render in
+       full either way. */
+    max-height: 30vh;
     border: none;
     background: $surface;
 }

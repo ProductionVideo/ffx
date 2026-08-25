@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ffx import analyse
 from ffx.models import Chapter, MediaInfo, StreamInfo
 from ffx.runner import FFmpegCancelled
@@ -41,6 +43,94 @@ def test_run_qc_silence_and_freeze_descriptions(monkeypatch):
     analyse.run_qc(Path("in.mp4"), ["silence", "freeze"], duration=10.0, console=None)
 
     assert descriptions == ["Checking for silent sections", "Checking for frozen sections"]
+
+
+def _showinfo_line(n, pts_time, field_order, iskey, ftype):
+    return (
+        f"[Parsed_showinfo_0 @ 0x0] n:{n:4d} pts:{n * 512:7d} pts_time:{pts_time} "
+        f"duration:  512 duration_time:0.033333 fmt:yuv444p cl:left sar:1/1 s:640x480 "
+        f"i:{field_order} iskey:{iskey} type:{ftype} checksum:DEADBEEF "
+        f"plane_checksum:[AAAAAAAA BBBBBBBB CCCCCCCC] mean:[126 129 125] stdev:[71.5 70.6 72.2]"
+    )
+
+
+def test_run_qc_frames_reads_showinfo_and_computes_stats(monkeypatch):
+    captured = {}
+    lines = [
+        _showinfo_line(0, "0.0", "P", 1, "I"),
+        _showinfo_line(1, "0.033333", "P", 0, "P"),
+        _showinfo_line(2, "0.066667", "P", 0, "B"),
+    ]
+
+    def fake_run_with_output(args, *, total_duration, console, description):
+        captured["description"] = description
+        captured["vf_present"] = "-vf" in args and "showinfo" in args
+        return "\n".join(lines) + "\n"
+
+    monkeypatch.setattr(analyse, "run_with_output", fake_run_with_output)
+    findings = analyse.run_qc(Path("in.mp4"), ["frames"], duration=1.0, console=None)
+
+    assert captured["description"] == "Reading frame data"
+    assert captured["vf_present"]
+    stats = findings.frame_stats
+    assert stats.total == 3
+    assert stats.type_counts == {"I": 1, "P": 1, "B": 1}
+    assert stats.keyframe_count == 1
+    assert stats.field_order == "progressive"
+
+
+def test_parse_frame_stats_ignores_non_frame_showinfo_lines():
+    # Side-data/color_range/config lines share the same log prefix but
+    # have no "type:" field - must not be miscounted as frames.
+    stderr = "\n".join([
+        "[Parsed_showinfo_0 @ 0x0] config in time_base: 1/15360, frame_rate: 30/1",
+        _showinfo_line(0, "0.0", "P", 1, "I"),
+        "[Parsed_showinfo_0 @ 0x0]   side data - H.264 User Data Unregistered SEI message",
+        "[Parsed_showinfo_0 @ 0x0] color_range:unknown color_space:unknown",
+    ])
+    stats = analyse._parse_frame_stats(stderr)
+    assert stats.total == 1
+
+
+def test_parse_frame_stats_average_gop_from_keyframe_spacing():
+    lines = [_showinfo_line(0, "0.0", "P", 1, "I")]
+    for n in range(1, 30):
+        lines.append(_showinfo_line(n, f"{n * 0.033:.3f}", "P", 1 if n % 10 == 0 else 0, "P"))
+    stats = analyse._parse_frame_stats("\n".join(lines))
+    assert stats.keyframe_count == 3  # keyframes at frames 0, 10, 20 (30 frames total: 0-29)
+    assert stats.avg_gop_frames == 10.0
+
+
+def test_parse_frame_stats_detects_interlaced_top_field_first():
+    lines = [_showinfo_line(n, f"{n * 0.04:.3f}", "T", 1 if n == 0 else 0, "P") for n in range(5)]
+    stats = analyse._parse_frame_stats("\n".join(lines))
+    assert stats.field_order == "interlaced (top-field-first)"
+
+
+def test_parse_frame_stats_mixed_field_order():
+    lines = [
+        _showinfo_line(0, "0.0", "T", 1, "I"),
+        _showinfo_line(1, "0.04", "B", 0, "P"),
+    ]
+    stats = analyse._parse_frame_stats("\n".join(lines))
+    assert stats.field_order == "mixed"
+
+
+def test_parse_frame_stats_measured_fps_from_pts_span():
+    # 10 frames spanning exactly 0.0 to 0.333333s -> 9 intervals -> 27fps
+    lines = [_showinfo_line(n, f"{n * (1 / 27):.6f}", "P", 1 if n == 0 else 0, "P") for n in range(10)]
+    stats = analyse._parse_frame_stats("\n".join(lines))
+    assert stats.measured_fps == pytest.approx(27.0, abs=0.01)
+
+
+def test_parse_frame_stats_empty_stderr_returns_zeroed_stats():
+    stats = analyse._parse_frame_stats("")
+    assert stats.total == 0
+    assert stats.type_counts == {}
+    assert stats.keyframe_count == 0
+    assert stats.avg_gop_frames is None
+    assert stats.field_order == ""
+    assert stats.measured_fps is None
 
 
 def test_run_qc_freeze_captures_end_and_duration_not_just_start(monkeypatch):

@@ -86,6 +86,7 @@ def _flow(caps) -> None:
             if not restart:
                 break
             console.print("Alright, let's pick a different file.", style="ffx.muted")
+            tui_session.reset_panes()
     except KeyboardInterrupt:
         console.print("\nAlright, bailing.", style="ffx.muted")
         sys.exit(130)
@@ -184,7 +185,13 @@ def _select_operations(media, caps, ordered_ops=None):
         if choice == "done":
             break
         if choice == "analyse":
-            _run_analyse(media)
+            if _run_analyse(media):
+                # Declined "Back to the pipeline?" - reuse the same
+                # restart-with-a-new-file path as backing all the way
+                # out of an empty operations menu below, rather than a
+                # second bespoke "restart" mechanism for what amounts to
+                # the same outcome.
+                return None
             continue
         if choice == "recipes":
             picked = _pick_recipe(saved_recipes)
@@ -224,7 +231,10 @@ def _print_pipeline(ordered_ops, media, caps) -> None:
     )
 
 
-def _run_analyse(media) -> None:
+def _run_analyse(media) -> bool:
+    """Returns True if the caller should restart with a new file instead
+    of returning to the operations menu - the only way that happens is
+    declining the trailing "Back to the pipeline?" gate below."""
     # No reprint of the summary_rows() table here - it's already on
     # screen (the Media pane in the app, or the feedback table printed
     # the moment the file was picked in the classic wizard), so showing
@@ -232,31 +242,36 @@ def _run_analyse(media) -> None:
     # only ever prints things that table doesn't already have.
     params = prompts.run_wizard(analyse_prompt)
     if params is None or not params["checks"]:
-        return
+        return False
     checks = params["checks"]
 
     if "streams" in checks:
         _print_streams(media)
 
-    qc_checks = [c for c in checks if c in ("black", "silence", "freeze")]
-    if not qc_checks:
-        return
-    findings = run_qc(media.path, qc_checks, media.duration, console)
-    if "black" in qc_checks:
-        _print_qc_table("Black sections", findings.black_sections, media.duration)
-    if "silence" in qc_checks:
-        _print_qc_table("Silent sections", findings.silence_sections, media.duration)
-    if "freeze" in qc_checks:
-        _print_qc_table("Frozen sections", findings.freeze_sections, media.duration)
+    qc_checks = [c for c in checks if c in ("frames", "black", "silence", "freeze")]
+    if qc_checks:
+        findings = run_qc(media.path, qc_checks, media.duration, console)
+        if "frames" in qc_checks:
+            _print_frame_data(media, findings.frame_stats)
+        if "black" in qc_checks:
+            _print_qc_table("Black sections", findings.black_sections, media.duration)
+        if "silence" in qc_checks:
+            _print_qc_table("Silent sections", findings.silence_sections, media.duration)
+        if "freeze" in qc_checks:
+            _print_qc_table("Frozen sections", findings.freeze_sections, media.duration)
 
     # The next thing shown is the (long) operations menu, which would
     # otherwise slam over these results the instant they're printed -
     # this gate gives a beat to actually read them, and points at the
-    # scroll shortcut for a proper look back.
-    prompts.ask_confirm(
+    # scroll shortcut for a proper look back. Unlike a typical confirm,
+    # "No" here has a real, different effect (restart with a new file)
+    # rather than silently doing the exact same thing as "Yes" - that
+    # used to be genuinely indistinguishable, since the answer was never
+    # even read.
+    return not prompts.ask_confirm(
         "Back to the pipeline?",
         default=True,
-        hint="Ctrl+B/Ctrl+F scrolls the log first if you want another look.",
+        hint="Ctrl+B/Ctrl+F scrolls the log first if you want another look. 'n' starts over with a new file.",
     )
 
 
@@ -282,6 +297,49 @@ def _print_streams(media) -> None:
     for index, start, end, title in chapter_rows(media):
         chapters.add_row(str(index), humanize_duration(start), humanize_duration(end), title)
     console.print(chapters)
+
+
+_FRAME_TYPE_LABELS = {"I": "I (key)", "P": "P", "B": "B"}
+
+
+def _print_frame_data(media, stats) -> None:
+    if stats is None or stats.total == 0:
+        console.print("[bold]Frame data[/bold]  [ffx.warn]couldn't read any frames[/ffx.warn]")
+        return
+
+    table = Table(title="Frame data", box=box.SQUARE, border_style="ffx.border")
+    table.add_column("Property", style="ffx.muted")
+    table.add_column("Value")
+
+    table.add_row("Total frames", str(stats.total))
+
+    breakdown = ", ".join(
+        f"{_FRAME_TYPE_LABELS.get(kind, kind)} {count} ({count / stats.total:.0%})"
+        for kind, count in stats.type_counts.items()
+    )
+    table.add_row("Frame types", breakdown)
+
+    video = media.primary_video
+    if stats.avg_gop_frames is not None:
+        gop_seconds = (
+            f" (~{stats.avg_gop_frames / video.frame_rate:.1f}s)" if video and video.frame_rate else ""
+        )
+        table.add_row("Keyframes", f"{stats.keyframe_count}, every ~{stats.avg_gop_frames:.1f} frames{gop_seconds}")
+    else:
+        table.add_row("Keyframes", str(stats.keyframe_count))
+
+    table.add_row("Field order", stats.field_order or "-")
+
+    if stats.measured_fps is not None:
+        declared = video.frame_rate if video else None
+        rate_text = f"{stats.measured_fps:.3f} fps measured"
+        if declared and abs(stats.measured_fps - declared) / declared > 0.02:
+            rate_text = f"[ffx.warn]{rate_text} (declared {declared} fps — possible VFR)[/ffx.warn]"
+        else:
+            rate_text = f"[ffx.ok]{rate_text}[/ffx.ok]"
+        table.add_row("Frame rate", rate_text)
+
+    console.print(table)
 
 
 def _print_qc_table(title: str, sections: list[tuple], duration: float) -> None:

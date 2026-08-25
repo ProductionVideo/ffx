@@ -330,6 +330,37 @@ def test_reset_requested_propagates_through_flow_instead_of_being_logged_as_a_fa
     assert "Traceback" not in log_text
 
 
+def test_big_menu_leaves_most_of_the_log_visible():
+    """Regression: a long menu (the 17-category operations list, here
+    stood in for by 20 generic items) used to grow tall enough to cover
+    nearly the entire log behind it - only ~11 of 35 log rows stayed
+    visible on a 40-row terminal. The list's own scroll cap is now
+    viewport-relative, so most of the log stays uncovered regardless of
+    terminal size."""
+
+    async def scenario():
+        app = FFXApp(lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            log = app.query_one("#log", RichLog)
+            for i in range(60):
+                log.write(f"line {i}")
+            await pilot.pause()
+
+            choices = [(f"Item {i}", i) for i in range(20)]
+            app.push_screen(SelectScreen("What next?", choices))
+            await pilot.pause()
+
+            vertical = app.screen.query_one("Vertical")
+            return log.region, vertical.region
+
+    log_region, modal_region = asyncio.run(scenario())
+    covered = max(0, (log_region.y + log_region.height) - max(log_region.y, modal_region.y))
+    visible = log_region.height - covered
+    # Was 11/35 (~31%) before this fix; require comfortably better.
+    assert visible >= log_region.height * 0.4
+
+
 def test_progress_bar_is_actually_visible():
     """Regression: the label used to take 1fr and shove the bar off-screen."""
 
@@ -529,3 +560,79 @@ def test_ctrl_r_returns_the_real_flow_to_step_one(sample_clip):
     # marker or anything else from the pipeline that was abandoned.
     assert "1/4" in log_text_after
     assert "2/4" not in log_text_after
+
+
+def test_analyse_declining_the_pipeline_gate_restarts_with_a_new_file(sample_clip):
+    """End to end with the real _flow: run Analyse, answer 'n' to 'Back
+    to the pipeline?' - must land back on the very first question with a
+    fresh Media pane, not silently continue to the operations menu the
+    way 'y' would (that used to be indistinguishable from 'n')."""
+    from ffx import hardware
+    from ffx.__main__ import _flow
+
+    caps = hardware.detect()
+    app = FFXApp(lambda: _flow(caps))
+
+    async def scenario():
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _wait_for_message(pilot, app, "Path to a media file")
+            app.screen.query_one(Input).value = str(sample_clip)
+            await pilot.press("enter")
+
+            await _wait_for_message(pilot, app, "What next?")
+            await pilot.press("a", "enter")  # type-to-jump -> Analyse
+
+            await _wait_for_message(pilot, app, "choose a report")
+            await pilot.press("enter")  # Full QC report preset
+
+            await _wait_for_message(pilot, app, "Back to the pipeline?")
+            await pilot.press("n")
+
+            # Restarted, not "What next?" again with the same file.
+            await _wait_for_message(pilot, app, "Path to a media file")
+            return str(app.query_one("#media-pane", Static).content)
+
+    media_after = asyncio.run(scenario())
+    assert media_after == "No file picked yet."
+
+
+def test_analyse_frame_data_against_real_ffmpeg(sample_clip):
+    """End to end with the real _flow and real ffmpeg: run Analyse with
+    the Frame data check, verify the rendered report actually shows
+    frame-level numbers (not just that nothing crashed) - a real 30fps
+    clip's report should say so, and log a real frame count."""
+    from ffx import hardware
+    from ffx.__main__ import _flow
+
+    caps = hardware.detect()
+    app = FFXApp(lambda: _flow(caps))
+
+    async def scenario():
+        async with app.run_test(size=(100, 40)) as pilot:
+            await _wait_for_message(pilot, app, "Path to a media file")
+            app.screen.query_one(Input).value = str(sample_clip)
+            await pilot.press("enter")
+
+            await _wait_for_message(pilot, app, "What next?")
+            await pilot.press("a", "enter")  # type-to-jump -> Analyse
+
+            await _wait_for_message(pilot, app, "choose a report")
+            # Custom -> just "frames" (skip the multi-select's other
+            # defaults so this test isn't also waiting on black/silence
+            # scans it doesn't care about).
+            await pilot.press("down", "enter")
+
+            await _wait_for_message(pilot, app, "Which checks?")
+            # Toggle off the pre-checked defaults (streams, frames,
+            # black, silence in that order) except "frames".
+            await pilot.press("space", "down", "down", "space", "down", "space")
+            await pilot.press("enter")
+
+            await _wait_for_message(pilot, app, "Back to the pipeline?")
+            log_text = "\n".join(str(line) for line in app.query_one("#log", RichLog).lines)
+            return log_text
+
+    log_text = asyncio.run(scenario())
+    assert "Frame data" in log_text
+    assert "Total frames" in log_text
+    assert "30" in log_text  # the sample clip is encoded at 30fps, 30 frames

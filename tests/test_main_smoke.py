@@ -4,16 +4,55 @@ against a real ffmpeg/ffprobe without needing a TTY.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from ffx import __main__ as ffx_main
-from ffx.models import OperationSettings
+from ffx.models import MediaInfo, OperationSettings, StreamInfo
 from ffx.ui import prompts
 
 
 def _op(name, **kwargs):
     return OperationSettings(name=name, display_name=name.title(), description="", **kwargs)
+
+
+def _media() -> MediaInfo:
+    video = StreamInfo(index=0, codec_type="video", codec_name="h264", width=1920, height=1080)
+    return MediaInfo(
+        path=Path("in.mp4"), format_name="mp4", format_long_name="",
+        duration=10.0, size=1000, bit_rate=5000, streams=[video],
+    )
+
+
+def test_run_analyse_declining_back_to_pipeline_signals_restart(monkeypatch):
+    # Regression: "Back to the pipeline?" used to discard its answer
+    # entirely - "y" and "n" were indistinguishable, both just fell
+    # through to the same "continue as normal" behaviour. "n" must now
+    # actually mean something different: restart with a new file.
+    monkeypatch.setattr(prompts, "run_wizard", lambda fn, *a, **k: {"checks": ["streams"]})
+    monkeypatch.setattr(prompts, "ask_confirm", lambda *a, **k: False)  # "n"
+
+    assert ffx_main._run_analyse(_media()) is True
+
+
+def test_run_analyse_accepting_back_to_pipeline_continues_normally(monkeypatch):
+    monkeypatch.setattr(prompts, "run_wizard", lambda fn, *a, **k: {"checks": ["streams"]})
+    monkeypatch.setattr(prompts, "ask_confirm", lambda *a, **k: True)  # "y" / Enter
+
+    assert ffx_main._run_analyse(_media()) is False
+
+
+def test_run_analyse_cancelling_the_checks_question_does_not_restart(monkeypatch):
+    # Backing out of "which checks?" (Esc/Ctrl+Z) is "nevermind", not
+    # "restart everything" - the trailing gate is never even reached.
+    def fail_if_asked(*a, **k):
+        raise AssertionError("the trailing confirm should not be reached")
+
+    monkeypatch.setattr(prompts, "run_wizard", lambda fn, *a, **k: None)
+    monkeypatch.setattr(prompts, "ask_confirm", fail_if_asked)
+
+    assert ffx_main._run_analyse(_media()) is False
 
 
 def test_filter_drop_conflict_flags_vf_alongside_filter_complex():
