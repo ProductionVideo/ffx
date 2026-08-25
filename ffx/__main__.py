@@ -16,7 +16,7 @@ from ffx.analyse import (
 )
 from ffx.analyse import prompt as analyse_prompt
 from ffx.build import build_argv, build_two_pass_argvs, needs_two_pass
-from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
+from ffx.models import FFmpegJob, MediaInfo, OperationSettings, OutputConfig, Recipe
 from ffx.operations import CATEGORIES, get_operation
 from ffx.runner import FFmpegCancelled, FFmpegRunError, run as run_ffmpeg
 from ffx.ui import prompts
@@ -500,6 +500,64 @@ def _contains_pair(args: list[str], first: str, second: str) -> bool:
     return any(args[i] == first and args[i + 1] == second for i in range(len(args) - 1))
 
 
+# A probed decoder codec_name doesn't always double as the matching
+# *encoder* name (mp3 decodes as "mp3" but only libmp3lame can encode
+# it) - this is deliberately a small, conservative subset of what
+# convert.py's own codec list knows, not an exhaustive one: a wrong
+# guess here would be a silent, unrequested format change nobody asked
+# for, so an unrecognized source codec falls through to ffmpeg's own
+# container default (today's behaviour) rather than risk a bad match.
+_AUDIO_ENCODER_FOR_SOURCE_CODEC = {
+    "aac": "aac",
+    "mp3": "libmp3lame",
+    "opus": "libopus",
+    "vorbis": "libvorbis",
+    "ac3": "ac3",
+    "eac3": "eac3",
+    "flac": "flac",
+    "alac": "alac",
+}
+
+
+def _matching_audio_encoder(source_codec: str) -> str | None:
+    # PCM is the one family where the probed decode name IS also the
+    # correct encoder name (pcm_s16le, pcm_s24le, ...) - matched
+    # directly by prefix rather than needing one dict entry per variant.
+    if source_codec.startswith("pcm_"):
+        return source_codec
+    return _AUDIO_ENCODER_FOR_SOURCE_CODEC.get(source_codec)
+
+
+def _default_audio_codec_op(ops, media: MediaInfo) -> OperationSettings | None:
+    """A synthetic trailing operation setting -c:a to match the source's
+    own codec - for when some op filters audio (so it can't be a plain
+    stream copy - build_argv's own copy-default already handles the
+    "nothing touched it at all" case) but nothing chose a replacement
+    codec, instead of silently falling through to ffmpeg's own default
+    encoder for the container (AAC, most of the time, confirmed against
+    a real PCM source ending up re-encoded to AAC with nothing in the
+    pipeline having asked for that).
+    """
+    needs_reencode = any(op.audio_filter or op.forces_audio_reencode for op in ops)
+    if not needs_reencode:
+        return None
+    all_args = [arg for op in ops for arg in (*op.output_args, *op.non_video_output_args)]
+    if "-c:a" in all_args:
+        return None  # something already made an explicit choice
+    audio = media.primary_audio
+    if audio is None:
+        return None
+    encoder = _matching_audio_encoder(audio.codec_name)
+    if encoder is None:
+        return None
+    return OperationSettings(
+        name="_default_audio_codec",
+        display_name="",
+        description="",
+        non_video_output_args=["-c:a", encoder],
+    )
+
+
 def _has_audio_copy_filter_conflict(ops) -> bool:
     # ffmpeg hard-errors combining a filtered audio stream with a
     # request to copy it untouched ("Filtering and streamcopy cannot be
@@ -527,6 +585,9 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
     for input_path in inputs:
         media = probe.probe(input_path)
         ops = [module.build(params, media, caps) for module, params in ordered_ops]
+        default_audio_op = _default_audio_codec_op(ops, media)
+        if default_audio_op is not None:
+            ops.append(default_audio_op)
         ext = _output_extension(ordered_ops, input_path.suffix)
         out_name = f"{input_path.stem}.{suffix}{ext}" if suffix else f"{input_path.stem}.out{ext}"
         job = FFmpegJob(

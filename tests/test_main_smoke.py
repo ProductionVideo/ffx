@@ -104,6 +104,66 @@ def test_audio_copy_filter_conflict_quiet_without_any_audio_filter():
     assert ffx_main._has_audio_copy_filter_conflict(ops) is False
 
 
+def _media_with_audio(codec_name: str) -> MediaInfo:
+    video = StreamInfo(index=0, codec_type="video", codec_name="h264", width=1920, height=1080)
+    audio = StreamInfo(index=1, codec_type="audio", codec_name=codec_name)
+    return MediaInfo(
+        path=Path("in.mp4"), format_name="mp4", format_long_name="",
+        duration=10.0, size=1000, bit_rate=5000, streams=[video, audio],
+    )
+
+
+def test_default_audio_codec_matches_pcm_source_exactly():
+    # Regression: a PCM source run through any audio filter (nothing
+    # touched video, no Convert step) used to silently come out as AAC -
+    # ffmpeg's own container default, not a stream copy (impossible once
+    # a filter's applied) and not the source's own format either.
+    ops = [_op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"])]
+    default_op = ffx_main._default_audio_codec_op(ops, _media_with_audio("pcm_s24le"))
+    assert default_op.non_video_output_args == ["-c:a", "pcm_s24le"]
+
+
+def test_default_audio_codec_maps_decoder_name_to_encoder_name():
+    # mp3 decodes as "mp3" but ffmpeg can only *encode* mp3 via
+    # "libmp3lame" - reusing the probed codec_name verbatim would fail.
+    ops = [_op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"])]
+    default_op = ffx_main._default_audio_codec_op(ops, _media_with_audio("mp3"))
+    assert default_op.non_video_output_args == ["-c:a", "libmp3lame"]
+
+
+def test_default_audio_codec_none_when_audio_untouched():
+    # build_argv's own copy-default already covers this case - adding a
+    # synthetic -c:a here too would be redundant, not wrong, but this
+    # confirms the two mechanisms don't double up.
+    ops = [_op("scale", video_filter=["scale=160:-2"])]
+    assert ffx_main._default_audio_codec_op(ops, _media_with_audio("pcm_s24le")) is None
+
+
+def test_default_audio_codec_none_when_a_codec_was_already_chosen():
+    ops = [
+        _op("convert", non_video_output_args=["-c:a", "mp3"]),
+        _op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"]),
+    ]
+    assert ffx_main._default_audio_codec_op(ops, _media_with_audio("pcm_s24le")) is None
+
+
+def test_default_audio_codec_none_for_an_unmapped_source_codec():
+    # A wrong guess here is a silent, unrequested format change - safer
+    # to fall through to ffmpeg's own default (today's behaviour) than
+    # risk mismatching an exotic/unrecognized source codec.
+    ops = [_op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"])]
+    assert ffx_main._default_audio_codec_op(ops, _media_with_audio("wmav2")) is None
+
+
+def test_default_audio_codec_none_when_forces_audio_reencode_without_filter():
+    # Sound's resample mode: needs a real re-encode (forces_audio_reencode)
+    # but sets no audio_filter - must still be recognized as "audio is
+    # being touched" so the source format is preserved here too.
+    ops = [_op("sound", non_video_output_args=["-ar", "48000"], forces_audio_reencode=True)]
+    default_op = ffx_main._default_audio_codec_op(ops, _media_with_audio("aac"))
+    assert default_op.non_video_output_args == ["-c:a", "aac"]
+
+
 @pytest.fixture
 def sample_clip(tmp_path):
     clip = tmp_path / "sample.mp4"
