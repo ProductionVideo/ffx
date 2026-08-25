@@ -217,6 +217,26 @@ def _describe_field_order(field_orders: set) -> str:
     return "mixed"
 
 
+def frame_range(start: float, end: Optional[float], duration: float, fps: float) -> tuple[int, int]:
+    """(first_frame, last_frame) a start/end timestamp pair covers at
+    fps - the point of a QC report for a patching workflow: not just
+    "black from 1.0s to 2.0s" but the exact frame numbers to hand to a
+    tool that fixes individual frames. `end` is None for a section still
+    running at end-of-stream (see QCFindings' docstring), in which case
+    it's treated as running through the clip's own duration, matching
+    section_stats()'s handling of the same case.
+
+    `end`'s timestamp is where the condition *stops* (ffmpeg's own
+    semantics for black_end/silence_end/freeze_end) - i.e. the first
+    unaffected frame, not the last affected one, so the last affected
+    frame is one frame before it.
+    """
+    end_seconds = end if end is not None else duration
+    first = round(start * fps)
+    last = round(end_seconds * fps) - 1
+    return first, max(first, last)
+
+
 def section_stats(
     sections: list[tuple], duration: float
 ) -> tuple[int, float, float]:

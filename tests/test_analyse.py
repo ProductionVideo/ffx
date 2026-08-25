@@ -179,6 +179,30 @@ def test_section_stats_empty():
     assert analyse.section_stats([], duration=10.0) == (0, 0.0, 0.0)
 
 
+def test_frame_range_matches_frame_accurate_boundaries():
+    # 1.0s-2.0s at 25fps: black_end is the timestamp the condition
+    # *stops* (the first clean frame), so the last affected frame is one
+    # before it - verified against real extracted/decoded frames
+    # (frame 24 and 50 clean, 25 and 49 the computed boundaries) in the
+    # course of building this, not just asserted from the formula.
+    first, last = analyse.frame_range(1.0, 2.0, duration=3.0, fps=25.0)
+    assert (first, last) == (25, 49)
+    assert last - first + 1 == 25  # matches black_duration (1.0s) * fps
+
+
+def test_frame_range_open_ended_runs_to_clip_duration():
+    first, last = analyse.frame_range(8.0, None, duration=10.0, fps=30.0)
+    assert first == 240
+    assert last == 299  # last frame of a 10s/30fps clip
+
+
+def test_frame_range_sub_frame_section_clamps_to_at_least_one_frame():
+    # A section shorter than one frame interval must still cover at
+    # least its own start frame, never end up before it.
+    first, last = analyse.frame_range(1.0, 1.001, duration=10.0, fps=25.0)
+    assert last >= first
+
+
 def test_streams_rows_covers_every_stream_not_just_primary():
     video = StreamInfo(index=0, codec_type="video", codec_name="h264", width=1920, height=1080)
     audio_en = StreamInfo(

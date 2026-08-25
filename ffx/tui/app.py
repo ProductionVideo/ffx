@@ -235,6 +235,9 @@ class FFXApp(App):
         self.query_one("#media-pane", Static).update("No file picked yet.")
         self.query_one("#pipeline-pane", Static).update("Pipeline is empty.")
 
+    def clear_log(self) -> None:
+        self.query_one("#log", RichLog).clear()
+
     def set_pipeline_pane(self, content: Text) -> None:
         self.query_one("#pipeline-pane", Static).update(content)
 
@@ -284,7 +287,7 @@ class FFXApp(App):
         if isinstance(self.screen, PromptScreen):
             self.screen.dismiss(session.RESET)
         self._pending_drop = None
-        self.query_one("#log", RichLog).clear()
+        self.clear_log()
         self.reset_panes()
         self.notify("Session cleared.", timeout=2)
 

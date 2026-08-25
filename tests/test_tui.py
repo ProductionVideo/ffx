@@ -565,8 +565,12 @@ def test_ctrl_r_returns_the_real_flow_to_step_one(sample_clip):
 def test_analyse_declining_the_pipeline_gate_restarts_with_a_new_file(sample_clip):
     """End to end with the real _flow: run Analyse, answer 'n' to 'Back
     to the pipeline?' - must land back on the very first question with a
-    fresh Media pane, not silently continue to the operations menu the
-    way 'y' would (that used to be indistinguishable from 'n')."""
+    fresh Media pane AND a wiped log (not just resumed), not silently
+    continue to the operations menu the way 'y' would (that used to be
+    indistinguishable from 'n'), and not leave the QC report it declined
+    still sitting in the log either (that was the next thing reported
+    broken - reset_panes() covered the panes but nothing cleared the log
+    on this specific path)."""
     from ffx import hardware
     from ffx.__main__ import _flow
 
@@ -590,10 +594,17 @@ def test_analyse_declining_the_pipeline_gate_restarts_with_a_new_file(sample_cli
 
             # Restarted, not "What next?" again with the same file.
             await _wait_for_message(pilot, app, "Path to a media file")
-            return str(app.query_one("#media-pane", Static).content)
+            media_after = str(app.query_one("#media-pane", Static).content)
+            log_text_after = "\n".join(str(line) for line in app.query_one("#log", RichLog).lines)
+            return media_after, log_text_after
 
-    media_after = asyncio.run(scenario())
+    media_after, log_text_after = asyncio.run(scenario())
     assert media_after == "No file picked yet."
+    # Only the fresh restart's own "1/4" banner - none of the declined
+    # run's QC report (streams table, frame data, etc.) still lingering.
+    assert "1/4" in log_text_after
+    assert "Streams" not in log_text_after
+    assert "Frame data" not in log_text_after
 
 
 def test_analyse_frame_data_against_real_ffmpeg(sample_clip):

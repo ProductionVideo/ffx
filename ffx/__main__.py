@@ -11,7 +11,9 @@ from rich.table import Table
 
 from ffx import hardware, preflight, presets as preset_calc, probe, recipes
 from ffx.tui import session as tui_session
-from ffx.analyse import chapter_rows, humanize_duration, run_qc, section_stats, streams_rows, summary_rows
+from ffx.analyse import (
+    chapter_rows, frame_range, humanize_duration, run_qc, section_stats, streams_rows, summary_rows,
+)
 from ffx.analyse import prompt as analyse_prompt
 from ffx.build import build_argv, build_two_pass_argvs, needs_two_pass
 from ffx.models import FFmpegJob, MediaInfo, OutputConfig, Recipe
@@ -251,14 +253,18 @@ def _run_analyse(media) -> bool:
     qc_checks = [c for c in checks if c in ("frames", "black", "silence", "freeze")]
     if qc_checks:
         findings = run_qc(media.path, qc_checks, media.duration, console)
+        # Frame numbers, not just timestamps, on every section table below -
+        # a frame-accurate patching workflow needs "fix frames 1204-1219",
+        # not "fix 1.2 seconds of the file starting around 40.1s".
+        fps = media.primary_video.frame_rate if media.primary_video else None
         if "frames" in qc_checks:
             _print_frame_data(media, findings.frame_stats)
         if "black" in qc_checks:
-            _print_qc_table("Black sections", findings.black_sections, media.duration)
+            _print_qc_table("Black sections", findings.black_sections, media.duration, fps)
         if "silence" in qc_checks:
-            _print_qc_table("Silent sections", findings.silence_sections, media.duration)
+            _print_qc_table("Silent sections", findings.silence_sections, media.duration, fps)
         if "freeze" in qc_checks:
-            _print_qc_table("Frozen sections", findings.freeze_sections, media.duration)
+            _print_qc_table("Frozen sections", findings.freeze_sections, media.duration, fps)
 
     # The next thing shown is the (long) operations menu, which would
     # otherwise slam over these results the instant they're printed -
@@ -268,11 +274,20 @@ def _run_analyse(media) -> bool:
     # rather than silently doing the exact same thing as "Yes" - that
     # used to be genuinely indistinguishable, since the answer was never
     # even read.
-    return not prompts.ask_confirm(
+    proceed = prompts.ask_confirm(
         "Back to the pipeline?",
         default=True,
         hint="Ctrl+B/Ctrl+F scrolls the log first if you want another look. 'n' starts over with a new file.",
     )
+    if proceed:
+        return False
+    # A clean slate, not just a restart - the whole point of declining is
+    # "I'm done looking at this," so the log shouldn't still be carrying
+    # it around. tui_session.reset_panes() alone (already called by the
+    # generic restart path in _flow's outer loop) doesn't touch the log,
+    # which is exactly what's being read right now - clear it here too.
+    tui_session.clear_log()
+    return True
 
 
 def _print_streams(media) -> None:
@@ -342,7 +357,9 @@ def _print_frame_data(media, stats) -> None:
     console.print(table)
 
 
-def _print_qc_table(title: str, sections: list[tuple], duration: float) -> None:
+def _print_qc_table(
+    title: str, sections: list[tuple], duration: float, fps: float | None = None
+) -> None:
     if not sections:
         console.print(f"[bold]{title}[/bold]  [ffx.ok]none detected[/ffx.ok]")
         return
@@ -357,10 +374,16 @@ def _print_qc_table(title: str, sections: list[tuple], duration: float) -> None:
     table.add_column("Start", style="ffx.muted")
     table.add_column("End")
     table.add_column("Duration")
+    if fps:
+        table.add_column("Frames", style="bold")
     for start, end, dur in sections:
         end_str = f"{end:.2f}s" if end is not None else "(runs to end of clip)"
         dur_str = f"{dur:.2f}s" if dur is not None else "-"
-        table.add_row(f"{start:.2f}s", end_str, dur_str)
+        row = [f"{start:.2f}s", end_str, dur_str]
+        if fps:
+            first, last = frame_range(start, end, duration, fps)
+            row.append(str(first) if first == last else f"{first}–{last} ({last - first + 1})")
+        table.add_row(*row)
     console.print(table)
 
 

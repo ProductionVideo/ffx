@@ -116,6 +116,17 @@ def reset_panes() -> bool:
     return True
 
 
+def clear_log() -> bool:
+    """Wipe the activity log - the non-keybinding equivalent of the App's
+    own Ctrl+R action, for a flow-thread call site (declining Analyse's
+    "Back to the pipeline?" gate) that wants the same clean-slate feel
+    without going through a key press."""
+    if _app is None:
+        return False
+    _app.call_from_thread(_app.clear_log)
+    return True
+
+
 class ProgressHandle:
     """One running ffmpeg's progress, as seen from the runner's thread."""
 
