@@ -76,6 +76,34 @@ def test_filter_drop_conflict_quiet_when_others_have_no_filters():
     assert ffx_main._filter_drop_conflict(ops) is None
 
 
+def test_audio_copy_filter_conflict_flags_channels_alongside_copy_audio():
+    # The exact combination ffmpeg hard-errors on: "Filtering and
+    # streamcopy cannot be used together" - Convert's "Copy (no
+    # re-encode)" audio option puts "-c:a copy" in non_video_output_args,
+    # any op with an audio_filter (channels/volume/fade/...) conflicts.
+    ops = [
+        _op("convert", non_video_output_args=["-c:v", "copy", "-c:a", "copy"]),
+        _op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"]),
+    ]
+    assert ffx_main._has_audio_copy_filter_conflict(ops) is True
+
+
+def test_audio_copy_filter_conflict_quiet_with_a_real_audio_codec():
+    ops = [
+        _op("convert", non_video_output_args=["-c:v", "copy", "-c:a", "aac"]),
+        _op("sound", audio_filter=["pan=stereo|c0=c1|c1=c1"]),
+    ]
+    assert ffx_main._has_audio_copy_filter_conflict(ops) is False
+
+
+def test_audio_copy_filter_conflict_quiet_without_any_audio_filter():
+    ops = [
+        _op("convert", non_video_output_args=["-c:v", "copy", "-c:a", "copy"]),
+        _op("scale", video_filter=["scale=160:-2"]),
+    ]
+    assert ffx_main._has_audio_copy_filter_conflict(ops) is False
+
+
 @pytest.fixture
 def sample_clip(tmp_path):
     clip = tmp_path / "sample.mp4"

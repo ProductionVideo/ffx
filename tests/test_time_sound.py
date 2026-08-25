@@ -27,6 +27,29 @@ def _media(*, video=True, audio_count=1, duration=10.0) -> MediaInfo:
     )
 
 
+def test_channels_left_to_stereo_is_unity_gain_duplicate():
+    # Both output channels set from one input channel in a single pan
+    # filter (coefficient 1) - not the mono-isolate-then-upmix path,
+    # which goes through ffmpeg's default upmix matrix and attenuates
+    # by ~3dB instead of duplicating at full level (verified against
+    # real decoded audio while building this).
+    op = sound_op._build_channels({"action": "left_to_stereo"})
+    assert op.audio_filter == ["pan=stereo|c0=c0|c1=c0"]
+
+
+def test_channels_right_to_stereo_is_unity_gain_duplicate():
+    op = sound_op._build_channels({"action": "right_to_stereo"})
+    assert op.audio_filter == ["pan=stereo|c0=c1|c1=c1"]
+
+
+def test_channels_left_right_only_still_downmix_to_mono():
+    # The pre-existing "isolate" actions are a different, still-useful
+    # thing (true mono output) - left_to_stereo/right_to_stereo are
+    # additive, not a replacement.
+    assert sound_op._build_channels({"action": "left"}).audio_filter == ["pan=mono|c0=c0"]
+    assert sound_op._build_channels({"action": "right"}).audio_filter == ["pan=mono|c0=c1"]
+
+
 def _product(stages: list[str]) -> float:
     product = 1.0
     for stage in stages:

@@ -496,6 +496,22 @@ def _filter_drop_conflict(ops) -> tuple[str, list[str]] | None:
     return (fc_op.display_name, dropped) if dropped else None
 
 
+def _contains_pair(args: list[str], first: str, second: str) -> bool:
+    return any(args[i] == first and args[i + 1] == second for i in range(len(args) - 1))
+
+
+def _has_audio_copy_filter_conflict(ops) -> bool:
+    # ffmpeg hard-errors combining a filtered audio stream with a
+    # request to copy it untouched ("Filtering and streamcopy cannot be
+    # used together") - discovered because Sound's new channel-duplicate
+    # actions (and, it turns out, the pre-existing swap/left/right/
+    # volume/fade ones too) all use audio_filter, and Convert's "Copy
+    # (no re-encode)" audio option puts "-c:a copy" in the same job.
+    has_audio_filter = any(op.audio_filter for op in ops)
+    has_audio_copy = any(_contains_pair(op.non_video_output_args, "-c:a", "copy") for op in ops)
+    return has_audio_filter and has_audio_copy
+
+
 def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
     print_step(4, 4, "Do this?")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -529,6 +545,15 @@ def _confirm_and_run(inputs, ordered_ops, output_dir, suffix, caps) -> str:
             f"Heads up: {fc_name} builds its own filter graph, so "
             f"{', '.join(dropped)} won't be applied in the same run — "
             "do that as a separate pass on the result instead.",
+            style="ffx.warn",
+        )
+
+    if _has_audio_copy_filter_conflict(jobs[0][2].operations):
+        console.print(
+            "Heads up: an audio filter (Sound's channels/volume/fade/etc.) can't "
+            "run alongside Convert's 'Copy (no re-encode)' audio — ffmpeg can't filter "
+            "a stream it's also being told to copy untouched. Pick a real audio codec "
+            "(AAC, PCM, ...) in Convert instead.",
             style="ffx.warn",
         )
 

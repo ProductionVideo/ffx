@@ -27,7 +27,7 @@ Operations compose into a pipeline — queue several against one file, or agains
 | **Composite** | Watermark, stack, side-by-side, chroma key |
 | **Sequence** | Join clips end to end (auto-conformed to the first clip's canvas) |
 | **Time** | Frame rate, speed, loops, freezes; turn a still image into a clip |
-| **Sound** | Volume, normalize, strip/extract audio; replace or mix in another audio file |
+| **Sound** | Volume, normalize, strip/extract audio; replace or mix in another audio file; channel ops including duplicating a single channel to both sides at unity gain |
 | **Metadata** | View / edit container tags |
 | **Repair** | Tolerant remux for broken files |
 | **Analyse** | Every stream/chapter, frame data (I/P/B mix, GOP size, field order, measured vs. declared frame rate), and QC scans for black frames, silence, and freezes — each with exact frame numbers, not just timestamps, for frame-accurate patching |

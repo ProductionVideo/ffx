@@ -93,8 +93,10 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
                 ("Downmix to mono", "downmix"),
                 ("Upmix mono to stereo", "upmix"),
                 ("Swap left/right", "swap"),
-                ("Left channel only", "left"),
-                ("Right channel only", "right"),
+                ("Left channel only (mono output)", "left"),
+                ("Right channel only (mono output)", "right"),
+                ("Left channel to both (stereo, unity gain)", "left_to_stereo"),
+                ("Right channel to both (stereo, unity gain)", "right_to_stereo"),
             ],
         )
         return {"mode": "channels", "action": action}
@@ -270,9 +272,24 @@ def _build_channels(params: dict) -> OperationSettings:
             name=name, display_name=display_name, description="Left channel only",
             audio_filter=["pan=mono|c0=c0"], serializable={},
         )
+    if action == "right":
+        return OperationSettings(
+            name=name, display_name=display_name, description="Right channel only",
+            audio_filter=["pan=mono|c0=c1"], serializable={},
+        )
+    # left_to_stereo / right_to_stereo: both output channels set directly
+    # from one input channel in a single filter (coefficient 1 = unity
+    # gain) - not the same as isolating to mono and then requesting 2
+    # channels via -ac, which goes through ffmpeg's default upmix matrix
+    # and quietly attenuates by ~3dB instead of duplicating at full level.
+    if action == "left_to_stereo":
+        return OperationSettings(
+            name=name, display_name=display_name, description="Left channel to both (stereo)",
+            audio_filter=["pan=stereo|c0=c0|c1=c0"], serializable={},
+        )
     return OperationSettings(
-        name=name, display_name=display_name, description="Right channel only",
-        audio_filter=["pan=mono|c0=c1"], serializable={},
+        name=name, display_name=display_name, description="Right channel to both (stereo)",
+        audio_filter=["pan=stereo|c0=c1|c1=c1"], serializable={},
     )
 
 
