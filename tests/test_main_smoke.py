@@ -164,6 +164,39 @@ def test_default_audio_codec_none_when_forces_audio_reencode_without_filter():
     assert default_op.non_video_output_args == ["-c:a", "aac"]
 
 
+def test_select_operations_gives_crop_the_effective_frame_not_the_source(monkeypatch):
+    # Integration test for the actual reported bug: drives
+    # _select_operations itself (not crop.prompt() in isolation) with
+    # Scale already queued ahead of it, confirming the wiring in
+    # __main__.py - not just crop.py's own logic - correctly narrows
+    # Crop's bounds to the post-scale frame.
+    from ffx.models import HardwareCapabilities
+    from ffx.operations import scale as scale_op
+
+    caps = HardwareCapabilities(videotoolbox_available=False, hw_encoders=set(), hw_decoders=set())
+    scale_params = {"mode": "width", "width": 1280, "algo": "lanczos"}
+    ordered_ops = [(scale_op, scale_params)]
+
+    captured = {}
+
+    def fake_ask_int(message, **kwargs):
+        captured[message] = kwargs
+        return kwargs.get("max_allowed") or kwargs.get("default")
+
+    choose_answers = iter(["crop", "rect", "done"])
+    monkeypatch.setattr(prompts, "run_wizard", lambda fn, *a, **k: fn(*a, **k))
+    monkeypatch.setattr(prompts, "choose_preset", lambda *a, **k: None)
+    monkeypatch.setattr(prompts, "choose", lambda *a, **k: next(choose_answers))
+    monkeypatch.setattr(prompts, "ask_int", fake_ask_int)
+
+    result = ffx_main._select_operations(_media(), caps, ordered_ops)
+
+    assert captured["Crop width (px):"]["max_allowed"] == 1280
+    assert captured["Crop height (px):"]["max_allowed"] == 720
+    crop_params = result[-1][1]
+    assert (crop_params["width"], crop_params["height"]) == (1280, 720)
+
+
 @pytest.fixture
 def sample_clip(tmp_path):
     clip = tmp_path / "sample.mp4"

@@ -1,10 +1,13 @@
 from pathlib import Path
 
+from ffx import dimensions
 from ffx.models import MediaInfo, StreamInfo
 from ffx.operations import crop as crop_op
+from ffx.operations import scale as scale_op
 from ffx.operations import sound as sound_op
 from ffx.operations.sound import output_extension
 from ffx.operations.time import _atempo_chain
+from ffx.ui import prompts
 
 
 def _media(*, video=True, audio_count=1, duration=10.0) -> MediaInfo:
@@ -139,3 +142,58 @@ def test_crop_detect_cancel_raises_plain_keyboard_interrupt(monkeypatch):
         assert False, "FFmpegCancelled should not escape _detect_crop"
     except KeyboardInterrupt:
         pass
+
+
+def test_crop_rect_prompt_bounds_against_the_effective_frame_not_the_source(monkeypatch):
+    # Regression target: this exact sequence - scale to 1280 wide, then
+    # a manual crop rectangle sized for the *original* 1920x1080 frame -
+    # reached ffmpeg as a real, hard failure ("Failed to configure input
+    # pad") before this fix, because crop.py's rect mode had no
+    # dimension bounds at all, let alone ones aware of an earlier-queued
+    # Scale. media here is what __main__.py actually passes: the
+    # *effective* MediaInfo after Scale, not the raw probed one.
+    source = _media()  # 1920x1080
+    scale_params = {"mode": "width", "width": 1280, "algo": "lanczos"}
+    effective = dimensions.effective_media(source, [(scale_op, scale_params)])
+    assert (effective.primary_video.width, effective.primary_video.height) == (1280, 720)
+
+    captured = {}
+
+    def fake_ask_int(message, **kwargs):
+        captured[message] = kwargs
+        # Return whatever a real, correctly-bounded prompt would clamp
+        # to - the max allowed, proving the bound itself is usable.
+        return kwargs.get("max_allowed") or kwargs.get("default")
+
+    monkeypatch.setattr(prompts, "choose_preset", lambda *a, **k: None)  # "Custom..."
+    monkeypatch.setattr(prompts, "choose", lambda *a, **k: "rect")
+    monkeypatch.setattr(prompts, "ask_int", fake_ask_int)
+
+    params = crop_op.prompt(effective, None)
+
+    assert captured["Crop width (px):"]["max_allowed"] == 1280
+    assert captured["Crop height (px):"]["max_allowed"] == 720
+    # width answer was 1280 (the max) -> x has zero room left.
+    assert captured["Crop X offset (px from left, 0 = centered by ffmpeg):"]["max_allowed"] == 0
+    assert params == {"mode": "rect", "width": 1280, "height": 720, "x": 0, "y": 0}
+
+
+def test_crop_rect_prompt_has_no_bounds_without_a_video_stream(monkeypatch):
+    # Graceful degradation, not a crash, when dimensions can't be
+    # determined at all - falls back to today's unbounded behaviour.
+    audio_only = MediaInfo(
+        path=Path("in.mp3"), format_name="mp3", format_long_name="",
+        duration=10.0, size=1000, bit_rate=1000,
+        streams=[StreamInfo(index=0, codec_type="audio", codec_name="mp3")],
+    )
+    captured = {}
+
+    def fake_ask_int(message, **kwargs):
+        captured[message] = kwargs
+        return kwargs.get("default")
+
+    monkeypatch.setattr(prompts, "ask_int", fake_ask_int)
+    params = crop_op._ask_rect(audio_only)
+
+    assert captured["Crop width (px):"]["max_allowed"] is None
+    assert params == {"mode": "rect", "width": 1280, "height": 720, "x": 0, "y": 0}

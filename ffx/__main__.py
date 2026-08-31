@@ -9,7 +9,7 @@ from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
-from ffx import hardware, preflight, presets as preset_calc, probe, recipes
+from ffx import dimensions, hardware, preflight, presets as preset_calc, probe, recipes
 from ffx.tui import session as tui_session
 from ffx.analyse import (
     chapter_rows, frame_range, humanize_duration, run_qc, section_stats, streams_rows, summary_rows,
@@ -202,13 +202,19 @@ def _select_operations(media, caps, ordered_ops=None):
             continue
 
         module = get_operation(choice)
+        # What the frame will actually be by the time *this* operation's
+        # filter runs, not the file's own probed dimensions - the gap
+        # between those two is exactly how "scale to 1280 wide, then
+        # manually crop a 1600-wide rectangle" used to reach ffmpeg as a
+        # hard failure instead of being caught as an invalid answer here.
+        prompt_media = dimensions.effective_media(media, ordered_ops)
         form_factory = getattr(module, "tui_form", None)
         if form_factory is not None and tui_session.get_app() is not None:
             # A single-screen form replaces the sequential prompts when
             # the full-screen app is live; Esc dismisses with (None, True).
-            params, _ = tui_session.prompt(form_factory(media, caps))
+            params, _ = tui_session.prompt(form_factory(prompt_media, caps))
         else:
-            params = prompts.run_wizard(module.prompt, media, caps)
+            params = prompts.run_wizard(module.prompt, prompt_media, caps)
         if params is None:
             console.print(f"Cancelled {module.display_name}.", style="ffx.muted")
             continue

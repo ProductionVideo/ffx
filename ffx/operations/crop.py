@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from ffx import probe
 from ffx.models import HardwareCapabilities, MediaInfo, OperationSettings, Preset
 from ffx.runner import FFmpegCancelled, run_with_output
 from ffx.ui import prompts
@@ -60,6 +61,21 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         return {"mode": "aspect", "aspect": aspect}
 
     if mode == "auto":
+        # cropdetect always scans the source *file* directly - if an
+        # earlier-queued Scale/Crop/Orientate has already changed the
+        # effective frame size (reflected in `media` here), the region
+        # it finds is in the wrong coordinate space by the time this
+        # crop's filter actually runs.
+        raw_video = probe.probe(media.path).primary_video
+        video = media.primary_video
+        if raw_video and video and (raw_video.width, raw_video.height) != (video.width, video.height):
+            console.print(
+                f"Heads up: auto-detect scans the original file ({raw_video.width}x{raw_video.height}), "
+                f"but the frame will already be {video.width}x{video.height} by the time this crop runs - "
+                "the detected region likely won't line up. Exact rectangle (against the frame at this "
+                "point) is safer here.",
+                style="ffx.warn",
+            )
         detected = _detect_crop(media)
         if detected is None:
             console.print(
@@ -77,13 +93,46 @@ def prompt(media: MediaInfo, hardware: HardwareCapabilities) -> dict:
         color = prompts.ask_text("Border color (name or hex, e.g. black, white, #ff0000):", default="black")
         return {"mode": "border", "thickness": thickness, "color": color}
 
-    return {
-        "mode": "rect",
-        "width": prompts.ask_int("Crop width (px):", default=1280, min_allowed=2),
-        "height": prompts.ask_int("Crop height (px):", default=720, min_allowed=2),
-        "x": prompts.ask_int("Crop X offset (px from left, 0 = centered by ffmpeg):", default=0, min_allowed=0),
-        "y": prompts.ask_int("Crop Y offset (px from top, 0 = centered by ffmpeg):", default=0, min_allowed=0),
-    }
+    return _ask_rect(media)
+
+
+def _ask_rect(media: MediaInfo) -> dict:
+    # Bounded against the frame as it'll actually be at this point in the
+    # pipeline (media is the *effective* MediaInfo by the time this is
+    # called - see ffx.dimensions) rather than accepted with no
+    # validation at all, which is how a rectangle that no longer fits
+    # (typically: cropping after an earlier Scale) used to only surface
+    # as ffmpeg's own "Failed to configure input pad" at run time.
+    video = media.primary_video
+    frame_w = video.width if video and video.width else None
+    frame_h = video.height if video and video.height else None
+
+    width = prompts.ask_int(
+        "Crop width (px):",
+        default=min(1280, frame_w) if frame_w else 1280,
+        min_allowed=2,
+        max_allowed=frame_w,
+        hint=f"Frame is {frame_w}x{frame_h} at this point in the pipeline." if frame_w else "",
+    )
+    height = prompts.ask_int(
+        "Crop height (px):",
+        default=min(720, frame_h) if frame_h else 720,
+        min_allowed=2,
+        max_allowed=frame_h,
+    )
+    x = prompts.ask_int(
+        "Crop X offset (px from left, 0 = centered by ffmpeg):",
+        default=0,
+        min_allowed=0,
+        max_allowed=(frame_w - width) if frame_w else None,
+    )
+    y = prompts.ask_int(
+        "Crop Y offset (px from top, 0 = centered by ffmpeg):",
+        default=0,
+        min_allowed=0,
+        max_allowed=(frame_h - height) if frame_h else None,
+    )
+    return {"mode": "rect", "width": width, "height": height, "x": x, "y": y}
 
 
 def _detect_crop(media: MediaInfo) -> tuple[int, int, int, int] | None:
